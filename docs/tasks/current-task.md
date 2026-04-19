@@ -2,265 +2,209 @@
 
 ## 任务名称
 
-为知识库页 `/library` 增加表格视图和思维导图视图。
+Phase 2A：为 KnowBase 增加数据库与 API 骨架，先用 mock processing 跑通持久化闭环。
 
-## 任务背景
+## 任务目标
 
-KnowBase 的知识库页终版会支持多种视图：
+当前前端已经基本完成，但数据仍然主要来自 mock data。
 
-1. 知识领域视图
-2. 表格视图
-3. 思维导图视图
-4. 图谱视图
+下一步目标不是接真实 ASR / LLM，而是先完成最小持久化闭环：
 
-其中：
+用户提交链接
+→ 创建解析任务
+→ 后端保存任务
+→ mock processing 生成知识包
+→ 知识包写入数据库
+→ 知识库从数据库读取
+→ 知识包页从数据库读取
 
-* 知识领域视图用于浏览动态归档后的知识结构。
-* 表格视图用于快速检索、筛选和管理内容。
-* 思维导图视图用于展示层级结构：知识领域 → 二级主题 → 内容。
-* 图谱视图用于展示内容节点，并通过关键词筛选内容之间的关系。
+## 技术方向
 
-当前任务实现三个可用视图：
+优先使用：
 
-1. 知识领域
-2. 表格视图
-3. 思维导图
+* Supabase PostgreSQL 作为数据库
+* Next.js App Router API Routes 作为轻后端接口
+* 现有 `src/lib/data-access.ts` 作为前端数据访问层
 
-当前任务不要实现图谱视图。
+## 重要原则
 
-注意：图谱视图后续要做，它的逻辑是“内容节点 + 关键词筛选”，不是普通装饰性网状图。
+不要一次性实现完整复杂后端。
 
-## 核心原则
+当前阶段只做最小可持久化闭环。
 
-所有视图必须来自同一份知识库数据。
+不要接：
 
-不要为表格视图单独 hardcode 一组 tableRows。
-不要为思维导图单独 hardcode 一组 mindMapNodes。
-不要在 JSX 里写死具体内容标题、领域名称、主题名称。
-
-请从现有数据结构推导：
-
-* `libraryCategories`
-* `libraryCategories[].topics`
-* `topics[].contents`
-
-通过映射函数生成不同视图需要的数据。
-
-## 修改范围
-
-允许修改：
-
-* `src/app/library/page.tsx`
-* 如有必要，可以少量修改 `src/lib/mock-data.ts`
-
-建议优先在 `src/app/library/page.tsx` 内部新增纯函数：
-
-* `buildTableRows(libraryCategories)`
-* `buildMindMapTree(libraryCategories)`
-
-如果逻辑较多，也可以在 `src/lib/mock-data.ts` 或新建轻量 util 中处理，但不要引入大型依赖。
-
-不要修改：
-
-* 首页 `/`
-* 知识包页 `/content/[id]`
-* 全局样式
-* docs 其他文件
-* package.json
-* 真实 API
-* Supabase
+* 真实小宇宙解析
+* YouTube 解析
+* 网页正文解析
 * ASR
 * LLM
-* 登录
-* 图谱视图
+* 动态归档算法
+* 图谱 API
+* 用户登录
 * 批注
 * 导出
+* 后台队列系统
 
-## 视图切换
+## 数据库方案
 
-在 `/library` 页面增加视图切换控件。
+当前阶段采用混合式 schema。
 
-视图切换项：
+先不要把 sections、transcriptBlocks、keywords、glossaryTerms 全部拆成独立表。
 
-* 知识领域
-* 表格视图
-* 思维导图
+先用 `contents.content_payload jsonb` 保存完整知识包结构，降低前端适配成本。
 
-默认进入 `/library` 时显示：
+需要设计这些表：
 
-* 知识领域
+1. `parse_tasks`
+2. `contents`
+3. `library_categories`
+4. `library_topics`
+5. `content_topic_assignments`
 
-视图切换控件样式：
+## parse_tasks
 
-* 轻量 segmented control / tab
-* 当前视图高亮
-* 放在搜索区域附近或页面标题区下方
-* 不要做成重型导航
+用于首页任务流。
 
-## 知识领域视图
+字段建议：
 
-保持当前已完成的知识领域视图，不要重构它。
+* id
+* url
+* platform
+* title
+* status
+* progress
+* content_id
+* error_message
+* created_at
+* updated_at
 
-该视图继续使用：
+status 包含：
 
-* `libraryCategories`
-* `recentTopics`
-* `recentContents`
+* submitted
+* detecting_source
+* extracting_content
+* generating_transcript
+* generating_knowledge_pack
+* completed
+* failed
 
-本任务不要重新设计知识领域视图，只在必要时让它适配视图切换。
+## contents
 
-## 表格视图
+用于知识包主体。
 
-表格视图用于快速管理和检索知识包。
+字段建议：
 
-表格数据必须从 `libraryCategories` 逻辑推导。
+* id
+* task_id
+* title
+* platform
+* source_url
+* author
+* published_at
+* parsed_at
+* summary
+* content_payload jsonb
+* created_at
+* updated_at
 
-映射逻辑：
+`content_payload` 保存当前前端需要的完整结构，包括：
 
-遍历：
+* keywords
+* sections
+* glossaryTerms
+* transcriptBlocks
 
-`libraryCategories → topics → contents`
+## library_categories
 
-将每条 content 映射为一行。
+用于一级知识领域。
 
-每行至少包含：
+字段建议：
 
-* content id
-* 标题
-* 来源平台
-* 作者
-* 所属领域，也就是 category.name
-* 所属主题，也就是 topic.name
-* Top 关键词
-* 解析时间
-* 操作
+* id
+* name
+* description
+* generated_reason
+* source_content_count
+* confidence
+* last_adjusted_at
+* created_at
+* updated_at
 
-表格列建议：
+## library_topics
 
-1. 标题
-2. 来源
-3. 作者
-4. 所属领域
-5. 所属主题
-6. Top 关键词
-7. 解析时间
-8. 操作
+用于二级主题。
 
-操作：
+字段建议：
 
-* `查看知识包`
-* 点击跳转 `/content/demo-001`
+* id
+* category_id
+* name
+* description
+* top_keywords
+* created_at
+* updated_at
 
-注意：当前阶段可以统一跳转 `/content/demo-001`，不要为了表格视图扩充多个内容详情页。
+## content_topic_assignments
 
-## 思维导图视图
+用于内容和主题的归档关系。
 
-思维导图视图用于展示层级结构：
+字段建议：
 
-```text
-我的知识库
-  └── 知识领域
-        └── 二级主题
-              └── 内容
-```
+* id
+* content_id
+* topic_id
+* confidence
+* assignment_reason
+* created_at
+* updated_at
 
-当前不引入真实 mind map 库，不做复杂拖拽和缩放。
+## API 设计
 
-请用纯前端布局模拟思维导图：
+当前阶段需要设计这些 API：
 
-* 左侧或顶部是根节点：`我的知识库`
-* 第二层是知识领域节点
-* 第三层是二级主题节点
-* 第四层是内容节点
+1. `POST /api/parse-tasks`
 
-视觉要求：
+   * 提交链接
+   * 创建 parse_task
+   * mock 生成 content
+   * 写入 contents 和归档关系
+   * 返回 task
 
-* 节点用卡片 / pill / rounded box 展示
-* 层级之间用缩进、连接线、边框或 flex/grid 表达
-* 不要只做普通列表，要让用户感觉这是结构图
-* 不要引入大型依赖
-* 不要做拖拽、缩放、画布
+2. `GET /api/parse-tasks/:id`
 
-思维导图数据必须从 `libraryCategories` 推导。
+   * 查询任务状态
 
-映射逻辑：
+3. `GET /api/library`
 
-`buildMindMapTree(libraryCategories)` 返回类似结构：
+   * 返回当前 `/library` 需要的数据结构：
 
-```ts
-{
-  id: "root",
-  label: "我的知识库",
-  children: [
-    {
-      id: category.id,
-      label: category.name,
-      type: "category",
-      children: [
-        {
-          id: topic.id,
-          label: topic.name,
-          type: "topic",
-          children: topic.contents.map(...)
-        }
-      ]
-    }
-  ]
-}
-```
+     * libraryCategories
+     * recentTopics
+     * recentContents
 
-内容节点点击后跳转到 `/content/demo-001`。
+4. `GET /api/contents/:id`
 
-## 搜索与筛选复用
+   * 返回当前 `/content/[id]` 需要的数据结构
 
-如果当前页面已有搜索框，请三个视图共用同一个搜索状态。
+## 前端适配原则
 
-搜索范围至少包括：
+尽量不改页面组件。
 
-* 标题
-* 所属领域
-* 所属主题
-* 关键词
-* 作者
+优先修改：
 
-如果当前页面已有最近关注主题筛选，三个视图也应响应该筛选。
+* `src/lib/data-access.ts`
 
-不要为每个视图单独写一套搜索逻辑。
+让页面继续调用：
 
-建议实现统一过滤函数：
+* `getLibraryData()`
+* `getKnowledgeItemById(id)`
 
-* `filterLibraryCategories(libraryCategories, query, activeTopic)`
+只是内部从 mock data 改为 API / 数据库。
 
-然后三个视图都基于过滤后的数据渲染。
+## 当前任务要求
 
-## 空状态
-
-如果搜索或筛选后没有结果：
-
-* 知识领域视图显示已有空状态
-* 表格视图显示：`没有找到匹配的内容`
-* 思维导图视图显示：`没有可展示的知识结构`
-
-## 禁止事项
-
-不要实现：
-
-* 图谱视图
-* 内容节点图谱
-* 关键词筛选图谱
-* 真实 API
-* Supabase
-* 登录
-* 批量编辑
-* 删除内容
-* 导出
-* 拖拽思维导图
-* 缩放画布
-* 第三方大型 mind map 库
-
-当前只做数据驱动的表格视图和轻量思维导图视图。
-
-## 执行方式
+现在先不要写代码。
 
 请先读取：
 
@@ -269,18 +213,24 @@ KnowBase 的知识库页终版会支持多种视图：
 * `docs/product/information-architecture.md`
 * `docs/product/dynamic-archive-principles.md`
 * `docs/contracts/data-contracts.md`
-* `docs/tasks/current-task.md`
+* `src/lib/mock-data.ts`
+* `src/lib/data-access.ts`
+* `src/lib/library-view-model.ts`
+* `src/app/page.tsx`
+* `src/app/library/page.tsx`
+* `src/app/content/[id]/page.tsx`
+* `src/app/content/[id]/KnowledgePackClient.tsx`
 
-然后先输出：
+然后输出方案评估：
 
-1. 当前 `/library` 页面已有结构
-2. 当前数据结构是否足够映射表格视图
-3. 当前数据结构是否足够映射思维导图视图
-4. 需要修改哪些文件
-5. 视图切换方案
-6. 表格数据映射方案
-7. 思维导图数据映射方案
-8. 搜索和筛选如何复用
-9. 不会修改哪些文件
+1. 当前前端需要哪些核心数据结构
+2. 这个混合式 schema 是否足够支撑当前页面
+3. 是否需要补充字段
+4. API response 应该如何对齐当前前端
+5. `data-access.ts` 应该如何逐步替换
+6. 哪些代码暂时不要改
+7. 如果要开始实现，第一步应该创建哪些文件
+8. 需要哪些 Supabase 环境变量
+9. 风险点和回滚方案
 
-在用户确认前，不要改代码。
+在用户确认前，不要改业务代码。
