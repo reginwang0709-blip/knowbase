@@ -1,6 +1,6 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
-import { getKnowledgeItemById } from "@/lib/mock-data";
+import { getKnowledgeItemById } from "@/lib/data-access";
 import KnowledgePackClient from "./KnowledgePackClient";
 
 type ContentPageProps = {
