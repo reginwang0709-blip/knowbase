@@ -1,9 +1,10 @@
 "use client";
 
 import Link from "next/link";
-import { useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { Dispatch, SetStateAction } from "react";
 import {
+  getFallbackLibraryData,
   getLibraryData,
 } from "@/lib/data-access";
 import {
@@ -22,7 +23,6 @@ const viewOptions = [
   { id: "table", label: "表格视图" },
   { id: "mindmap", label: "思维导图" },
 ] as const;
-const { libraryCategories, recentContents, recentTopics } = getLibraryData();
 
 type LibraryView = (typeof viewOptions)[number]["id"];
 
@@ -231,6 +231,7 @@ function MindMapTopicBranch({
 }
 
 export default function LibraryPage() {
+  const [libraryData, setLibraryData] = useState(getFallbackLibraryData);
   const [query, setQuery] = useState("");
   const [activeTopicId, setActiveTopicId] = useState<string | null>(null);
   const [activeView, setActiveView] = useState<LibraryView>("domains");
@@ -245,9 +246,24 @@ export default function LibraryPage() {
     keyword: string;
   } | null>(null);
   const [selectedCategoryId, setSelectedCategoryId] = useState(
-    libraryCategories[0]?.id ?? "",
+    () => libraryData.libraryCategories[0]?.id ?? "",
   );
   const detailRef = useRef<HTMLElement | null>(null);
+  const { libraryCategories, recentContents, recentTopics } = libraryData;
+
+  useEffect(() => {
+    let isMounted = true;
+
+    getLibraryData().then((data) => {
+      if (isMounted) {
+        setLibraryData(data);
+      }
+    });
+
+    return () => {
+      isMounted = false;
+    };
+  }, []);
 
   const normalizedQuery = query.trim().toLowerCase();
   const activeTopic =
@@ -264,7 +280,7 @@ export default function LibraryPage() {
         normalizedQuery,
         activeContentIds,
       ),
-    [activeContentIds, normalizedQuery],
+    [activeContentIds, libraryCategories, normalizedQuery],
   );
   const rowsForTable = useMemo(
     () => buildTableRows(filteredCategories),
@@ -280,7 +296,7 @@ export default function LibraryPage() {
       recentContents.filter((content) =>
         contentMatches(content, normalizedQuery, activeContentIds),
       ),
-    [activeContentIds, normalizedQuery],
+    [activeContentIds, normalizedQuery, recentContents],
   );
 
   const selectedCategory =
