@@ -1,5 +1,6 @@
 import {
   getKnowledgeItemById as getMockKnowledgeItemById,
+  type KnowledgeItem,
   libraryCategories,
   type LibraryCategory,
   type LibraryContentItem,
@@ -12,6 +13,11 @@ export type LibraryData = {
   libraryCategories: LibraryCategory[];
   recentTopics: RecentTopic[];
   recentContents: LibraryContentItem[];
+};
+
+export type CreateParseTaskResult = {
+  task: unknown;
+  contentId: string;
 };
 
 export function getFallbackLibraryData(): LibraryData {
@@ -38,6 +44,58 @@ export async function getLibraryData(): Promise<LibraryData> {
   }
 }
 
-export function getKnowledgeItemById(id: string) {
-  return getMockKnowledgeItemById(id);
+export async function createParseTask(
+  url: string,
+): Promise<CreateParseTaskResult> {
+  const response = await fetch("/api/parse-tasks", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({ url }),
+  });
+
+  if (!response.ok) {
+    throw new Error("Parse task request failed.");
+  }
+
+  const data = (await response.json()) as Partial<CreateParseTaskResult>;
+
+  if (!data.contentId) {
+    throw new Error("Parse task response is missing contentId.");
+  }
+
+  return {
+    task: data.task,
+    contentId: data.contentId,
+  };
+}
+
+export async function getKnowledgeItemById(
+  id: string,
+  baseUrl?: string,
+): Promise<KnowledgeItem | undefined> {
+  const fallbackItem =
+    getMockKnowledgeItemById(id) ?? getMockKnowledgeItemById("demo-001");
+
+  if (id === "demo-001") {
+    return fallbackItem;
+  }
+
+  try {
+    const apiUrl = baseUrl
+      ? new URL(`/api/contents/${id}`, baseUrl).toString()
+      : `/api/contents/${id}`;
+    const response = await fetch(apiUrl, {
+      cache: "no-store",
+    });
+
+    if (!response.ok) {
+      return fallbackItem;
+    }
+
+    return (await response.json()) as KnowledgeItem;
+  } catch {
+    return fallbackItem;
+  }
 }

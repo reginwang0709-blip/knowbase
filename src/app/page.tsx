@@ -1,7 +1,9 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useState } from "react";
+import { useRouter } from "next/navigation";
+import { useEffect, useRef, useState } from "react";
+import { createParseTask } from "@/lib/data-access";
 
 const statusSteps = [
   "已提交",
@@ -13,12 +15,18 @@ const statusSteps = [
 ];
 
 const defaultUrl = "https://www.xiaoyuzhoufm.com/episode/demo-001";
+const fallbackContentId = "demo-001";
 
 export default function HomePage() {
+  const router = useRouter();
   const [url, setUrl] = useState(defaultUrl);
   const [isSubmitted, setIsSubmitted] = useState(false);
   const [stepIndex, setStepIndex] = useState(0);
   const [submittedAt, setSubmittedAt] = useState("");
+  const [contentId, setContentId] = useState(fallbackContentId);
+  const [isParseRequestDone, setIsParseRequestDone] = useState(false);
+  const [isUsingFallback, setIsUsingFallback] = useState(false);
+  const hasNavigatedRef = useRef(false);
 
   useEffect(() => {
     if (!isSubmitted || stepIndex >= statusSteps.length - 1) {
@@ -32,10 +40,30 @@ export default function HomePage() {
     return () => window.clearTimeout(timer);
   }, [isSubmitted, stepIndex]);
 
+  useEffect(() => {
+    if (
+      !isSubmitted ||
+      !isParseRequestDone ||
+      hasNavigatedRef.current ||
+      stepIndex < statusSteps.length - 1
+    ) {
+      return;
+    }
+
+    hasNavigatedRef.current = true;
+    router.push(`/content/${contentId}`);
+  }, [
+    contentId,
+    isParseRequestDone,
+    isSubmitted,
+    router,
+    stepIndex,
+  ]);
+
   const progress = Math.round(((stepIndex + 1) / statusSteps.length) * 100);
   const currentStatus = statusSteps[stepIndex];
 
-  const startParsing = () => {
+  const startParsing = async () => {
     setSubmittedAt(
       new Intl.DateTimeFormat("zh-CN", {
         month: "2-digit",
@@ -46,6 +74,21 @@ export default function HomePage() {
     );
     setIsSubmitted(true);
     setStepIndex(0);
+    setContentId(fallbackContentId);
+    setIsParseRequestDone(false);
+    setIsUsingFallback(false);
+    hasNavigatedRef.current = false;
+
+    try {
+      const result = await createParseTask(url);
+
+      setContentId(result.contentId);
+    } catch {
+      setContentId(fallbackContentId);
+      setIsUsingFallback(true);
+    } finally {
+      setIsParseRequestDone(true);
+    }
   };
 
   return (
@@ -76,11 +119,13 @@ export default function HomePage() {
               value={url}
               onChange={(event) => setUrl(event.target.value)}
               placeholder="粘贴小宇宙、YouTube 或网页链接"
+              disabled={isSubmitted && !isParseRequestDone}
             />
             <button
               className="kb-button shrink-0"
               type="button"
               onClick={startParsing}
+              disabled={isSubmitted && !isParseRequestDone}
             >
               生成知识包
             </button>
@@ -136,6 +181,11 @@ export default function HomePage() {
                   <dd className="mt-1 font-medium text-ink">{currentStatus}</dd>
                 </div>
               </dl>
+              {isUsingFallback ? (
+                <p className="mt-4 rounded-lg bg-panel p-3 text-sm leading-6 text-muted">
+                  当前使用演示内容，生成完成后会打开 demo 知识包。
+                </p>
+              ) : null}
 
               <div className="mt-7">
                 <div className="mb-2 flex items-center justify-between text-sm">
@@ -171,7 +221,7 @@ export default function HomePage() {
               </ol>
 
               {currentStatus === "已完成" ? (
-                <Link className="kb-button mt-8" href="/content/demo-001">
+                <Link className="kb-button mt-8" href={`/content/${contentId}`}>
                   查看知识包
                 </Link>
               ) : null}

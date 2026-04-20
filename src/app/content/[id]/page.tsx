@@ -1,4 +1,5 @@
 import Link from "next/link";
+import { headers } from "next/headers";
 import { notFound } from "next/navigation";
 import { getKnowledgeItemById } from "@/lib/data-access";
 import KnowledgePackClient from "./KnowledgePackClient";
@@ -9,9 +10,24 @@ type ContentPageProps = {
   }>;
 };
 
+async function getRequestBaseUrl() {
+  const requestHeaders = await headers();
+  const host = requestHeaders.get("host");
+
+  if (!host) {
+    return undefined;
+  }
+
+  const protocol =
+    requestHeaders.get("x-forwarded-proto") ??
+    (host.startsWith("localhost") ? "http" : "https");
+
+  return `${protocol}://${host}`;
+}
+
 export default async function ContentPage({ params }: ContentPageProps) {
   const { id } = await params;
-  const item = getKnowledgeItemById(id);
+  const item = await getKnowledgeItemById(id, await getRequestBaseUrl());
 
   if (!item) {
     notFound();

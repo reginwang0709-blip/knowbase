@@ -17,7 +17,6 @@ import {
   type MindMapNode,
 } from "@/lib/library-view-model";
 
-const contentHref = "/content/demo-001";
 const viewOptions = [
   { id: "domains", label: "知识领域" },
   { id: "table", label: "表格视图" },
@@ -53,6 +52,10 @@ function contentMatchesKeyword(content: LibraryContentItem, keyword: string) {
       keywordMatchesText(contentKeyword, keyword),
     )
   );
+}
+
+function getContentHref(contentId: string) {
+  return `/content/${contentId}`;
 }
 
 function toggleSetItem(
@@ -217,7 +220,7 @@ function MindMapTopicBranch({
             {topic.children.map((content) => (
               <Link
                 className="max-w-[260px] rounded-lg border border-line bg-panel px-3 py-2 text-sm font-medium leading-5 text-ink shadow-sm transition hover:border-sage hover:text-sage"
-                href={contentHref}
+                href={getContentHref(content.id)}
                 key={content.id}
               >
                 {content.label}
@@ -586,7 +589,7 @@ export default function LibraryPage() {
                               ? "border-sage bg-sage/5"
                               : "border-line"
                           }`}
-                          href={contentHref}
+                          href={getContentHref(content.id)}
                           key={content.id}
                         >
                           <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
@@ -651,7 +654,7 @@ export default function LibraryPage() {
             {filteredRecentContents.map((content) => (
               <Link
                 className="kb-card block p-4 transition hover:border-sage"
-                href={contentHref}
+                href={getContentHref(content.id)}
                 key={content.id}
               >
                 <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
@@ -745,7 +748,7 @@ export default function LibraryPage() {
                       <td className="whitespace-nowrap px-4 py-4">
                         <Link
                           className="font-semibold text-sage hover:text-coral"
-                          href={contentHref}
+                          href={getContentHref(row.id)}
                         >
                           查看知识包
                         </Link>
