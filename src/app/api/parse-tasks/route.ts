@@ -57,6 +57,46 @@ export async function POST(request: Request) {
   }
 
   try {
+    const { data: existingContent, error: existingContentError } =
+      await supabaseAdmin
+        .from("contents")
+        .select("*")
+        .eq("source_url", url)
+        .order("created_at", { ascending: true })
+        .limit(1);
+
+    if (existingContentError) {
+      throw existingContentError;
+    }
+
+    const matchedContent = existingContent?.[0];
+
+    if (matchedContent) {
+      const { data: completedTask, error: completeTaskError } =
+        await supabaseAdmin
+          .from("parse_tasks")
+          .update({
+            status: "completed",
+            progress: 100,
+            content_id: matchedContent.id,
+            title: matchedContent.title,
+            platform: matchedContent.platform,
+          })
+          .eq("id", createdTask.id)
+          .select("*")
+          .single();
+
+      if (completeTaskError) {
+        throw completeTaskError;
+      }
+
+      return NextResponse.json({
+        task: completedTask,
+        contentId: matchedContent.id,
+        duplicated: true,
+      });
+    }
+
     const { task, content } = await runMockProcessingForTask({
       taskId: createdTask.id,
       url,
@@ -65,6 +105,7 @@ export async function POST(request: Request) {
     return NextResponse.json({
       task,
       contentId: content.id,
+      duplicated: false,
     });
   } catch (error) {
     const errorMessage = getErrorMessage(error);

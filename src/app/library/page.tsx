@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { Dispatch, SetStateAction } from "react";
 import {
+  deleteContentById,
   getFallbackLibraryData,
   getLibraryData,
 } from "@/lib/data-access";
@@ -56,6 +57,12 @@ function contentMatchesKeyword(content: LibraryContentItem, keyword: string) {
 
 function getContentHref(contentId: string) {
   return `/content/${contentId}`;
+}
+
+function isDatabaseContentId(contentId: string) {
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(
+    contentId,
+  );
 }
 
 function toggleSetItem(
@@ -236,6 +243,8 @@ function MindMapTopicBranch({
 export default function LibraryPage() {
   const [libraryData, setLibraryData] = useState(getFallbackLibraryData);
   const [query, setQuery] = useState("");
+  const [deleteError, setDeleteError] = useState("");
+  const [deletingContentId, setDeletingContentId] = useState("");
   const [activeTopicId, setActiveTopicId] = useState<string | null>(null);
   const [activeView, setActiveView] = useState<LibraryView>("domains");
   const [collapsedCategories, setCollapsedCategories] = useState<Set<string>>(
@@ -254,12 +263,19 @@ export default function LibraryPage() {
   const detailRef = useRef<HTMLElement | null>(null);
   const { libraryCategories, recentContents, recentTopics } = libraryData;
 
+  const refreshLibraryData = async () => {
+    const data = await getLibraryData();
+
+    setLibraryData(data);
+  };
+
   useEffect(() => {
     let isMounted = true;
 
     getLibraryData().then((data) => {
       if (isMounted) {
         setLibraryData(data);
+        setDeleteError("");
       }
     });
 
@@ -324,6 +340,28 @@ export default function LibraryPage() {
     setActiveTopicId(null);
     setQuery("");
     setActiveKeyword(null);
+  };
+
+  const deleteContent = async (contentId: string) => {
+    const confirmed = window.confirm(
+      "确定要删除这条内容吗？删除后会从当前知识库中移除。",
+    );
+
+    if (!confirmed) {
+      return;
+    }
+
+    setDeleteError("");
+    setDeletingContentId(contentId);
+
+    try {
+      await deleteContentById(contentId);
+      await refreshLibraryData();
+    } catch {
+      setDeleteError("删除失败，请稍后重试。");
+    } finally {
+      setDeletingContentId("");
+    }
   };
 
   const selectCategoryKeyword = (categoryId: string, keyword: string) => {
@@ -437,6 +475,12 @@ export default function LibraryPage() {
 
       {activeView === "domains" ? (
         <>
+      {deleteError ? (
+        <div className="mb-5 rounded-lg border border-coral/30 bg-coral/10 px-4 py-3 text-sm font-medium text-coral">
+          {deleteError}
+        </div>
+      ) : null}
+
       <section className="mb-8">
         <div className="mb-4 flex items-end justify-between gap-4">
           <div>
@@ -583,13 +627,12 @@ export default function LibraryPage() {
                         contentMatchesKeyword(content, activeKeyword.keyword);
 
                       return (
-                        <Link
+                        <div
                           className={`rounded-lg border bg-white p-4 transition hover:border-sage ${
                             shouldHighlightContent
                               ? "border-sage bg-sage/5"
                               : "border-line"
                           }`}
-                          href={getContentHref(content.id)}
                           key={content.id}
                         >
                           <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
@@ -615,21 +658,41 @@ export default function LibraryPage() {
                                 {content.summary}
                               </p>
                             </div>
-                            <time className="shrink-0 text-sm text-muted">
-                              {content.parsedAt}
-                            </time>
+                            <div className="flex shrink-0 items-center gap-3 text-sm">
+                              <time className="text-muted">
+                                {content.parsedAt}
+                              </time>
+                              {isDatabaseContentId(content.id) ? (
+                                <button
+                                  className="font-semibold text-muted transition hover:text-coral"
+                                  disabled={deletingContentId === content.id}
+                                  type="button"
+                                  onClick={() => deleteContent(content.id)}
+                                >
+                                  删除
+                                </button>
+                              ) : null}
+                            </div>
                           </div>
-                          <div className="mt-3 flex flex-wrap gap-2">
-                            {content.topKeywords.slice(0, 3).map((keyword) => (
-                              <span
-                                className="rounded-lg bg-panel px-2.5 py-1 text-xs text-ink"
-                                key={keyword}
-                              >
-                                {keyword}
-                              </span>
-                            ))}
+                          <div className="mt-3 flex flex-wrap items-center justify-between gap-3">
+                            <div className="flex flex-wrap gap-2">
+                              {content.topKeywords.slice(0, 3).map((keyword) => (
+                                <span
+                                  className="rounded-lg bg-panel px-2.5 py-1 text-xs text-ink"
+                                  key={keyword}
+                                >
+                                  {keyword}
+                                </span>
+                              ))}
+                            </div>
+                            <Link
+                              className="text-sm font-semibold text-sage hover:text-coral"
+                              href={getContentHref(content.id)}
+                            >
+                              查看知识包
+                            </Link>
                           </div>
-                        </Link>
+                        </div>
                       );
                     })}
                   </div>
@@ -652,9 +715,8 @@ export default function LibraryPage() {
         {filteredRecentContents.length > 0 ? (
           <div className="grid gap-3">
             {filteredRecentContents.map((content) => (
-              <Link
+              <article
                 className="kb-card block p-4 transition hover:border-sage"
-                href={getContentHref(content.id)}
                 key={content.id}
               >
                 <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
@@ -667,21 +729,39 @@ export default function LibraryPage() {
                     </div>
                     <h3 className="font-semibold text-ink">{content.title}</h3>
                   </div>
-                  <time className="shrink-0 text-sm text-muted">
-                    {content.parsedAt}
-                  </time>
+                  <div className="flex shrink-0 items-center gap-3 text-sm">
+                    <time className="text-muted">{content.parsedAt}</time>
+                    {isDatabaseContentId(content.id) ? (
+                      <button
+                        className="font-semibold text-muted transition hover:text-coral"
+                        disabled={deletingContentId === content.id}
+                        type="button"
+                        onClick={() => deleteContent(content.id)}
+                      >
+                        删除
+                      </button>
+                    ) : null}
+                  </div>
                 </div>
-                <div className="mt-3 flex flex-wrap gap-2">
-                  {content.topKeywords.slice(0, 3).map((keyword) => (
-                    <span
-                      className="rounded-lg bg-panel px-2.5 py-1 text-xs text-ink"
-                      key={keyword}
-                    >
-                      {keyword}
-                    </span>
-                  ))}
+                <div className="mt-3 flex flex-wrap items-center justify-between gap-3">
+                  <div className="flex flex-wrap gap-2">
+                    {content.topKeywords.slice(0, 3).map((keyword) => (
+                      <span
+                        className="rounded-lg bg-panel px-2.5 py-1 text-xs text-ink"
+                        key={keyword}
+                      >
+                        {keyword}
+                      </span>
+                    ))}
+                  </div>
+                  <Link
+                    className="text-sm font-semibold text-sage hover:text-coral"
+                    href={getContentHref(content.id)}
+                  >
+                    查看知识包
+                  </Link>
                 </div>
-              </Link>
+              </article>
             ))}
           </div>
         ) : (
@@ -695,6 +775,12 @@ export default function LibraryPage() {
 
       {activeView === "table" ? (
         <section>
+          {deleteError ? (
+            <div className="mb-5 rounded-lg border border-coral/30 bg-coral/10 px-4 py-3 text-sm font-medium text-coral">
+              {deleteError}
+            </div>
+          ) : null}
+
           <div className="mb-4 flex flex-wrap items-end justify-between gap-3">
             <div>
               <h2 className="text-2xl font-semibold text-ink">表格视图</h2>
@@ -746,12 +832,24 @@ export default function LibraryPage() {
                         {row.parsedAt}
                       </td>
                       <td className="whitespace-nowrap px-4 py-4">
-                        <Link
-                          className="font-semibold text-sage hover:text-coral"
-                          href={getContentHref(row.id)}
-                        >
-                          查看知识包
-                        </Link>
+                        <div className="flex items-center gap-3">
+                          <Link
+                            className="font-semibold text-sage hover:text-coral"
+                            href={getContentHref(row.id)}
+                          >
+                            查看知识包
+                          </Link>
+                          {isDatabaseContentId(row.id) ? (
+                            <button
+                              className="font-semibold text-muted transition hover:text-coral"
+                              disabled={deletingContentId === row.id}
+                              type="button"
+                              onClick={() => deleteContent(row.id)}
+                            >
+                              删除
+                            </button>
+                          ) : null}
+                        </div>
                       </td>
                     </tr>
                   ))}

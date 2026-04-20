@@ -18,6 +18,12 @@ export type LibraryData = {
 export type CreateParseTaskResult = {
   task: unknown;
   contentId: string;
+  duplicated?: boolean;
+};
+
+export type DeleteContentResult = {
+  ok: boolean;
+  deletedContentId: string;
 };
 
 export function getFallbackLibraryData(): LibraryData {
@@ -38,7 +44,17 @@ export async function getLibraryData(): Promise<LibraryData> {
       return getFallbackLibraryData();
     }
 
-    return (await response.json()) as LibraryData;
+    const data = (await response.json()) as LibraryData;
+
+    if (
+      data.libraryCategories.length === 0 &&
+      data.recentTopics.length === 0 &&
+      data.recentContents.length === 0
+    ) {
+      return getFallbackLibraryData();
+    }
+
+    return data;
   } catch {
     return getFallbackLibraryData();
   }
@@ -68,7 +84,22 @@ export async function createParseTask(
   return {
     task: data.task,
     contentId: data.contentId,
+    duplicated: data.duplicated,
   };
+}
+
+export async function deleteContentById(
+  id: string,
+): Promise<DeleteContentResult> {
+  const response = await fetch(`/api/contents/${id}`, {
+    method: "DELETE",
+  });
+
+  if (!response.ok) {
+    throw new Error("Delete content request failed.");
+  }
+
+  return (await response.json()) as DeleteContentResult;
 }
 
 export async function getKnowledgeItemById(

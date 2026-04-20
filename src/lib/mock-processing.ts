@@ -167,7 +167,7 @@ export async function runMockProcessingForTask({
       task_id: taskId,
       title: demoItem.title,
       platform: demoItem.sourcePlatform,
-      source_url: url || demoItem.sourceUrl,
+      source_url: url,
       author: demoItem.author,
       published_at: toIsoDate(demoItem.publishedAt),
       parsed_at: new Date().toISOString(),
