@@ -1,5 +1,10 @@
 import "server-only";
 
+import {
+  decideTranscriptSource,
+  type TranscriptSourceDecision,
+} from "@/lib/source-adapters/xiaoyuzhou";
+
 export type LinkMetadata = {
   url: string;
   canonicalUrl?: string;
@@ -11,6 +16,8 @@ export type LinkMetadata = {
   publishedAt?: string;
   audioUrl?: string;
   coverUrl?: string;
+  durationSeconds?: number;
+  transcriptSourceDecision?: TranscriptSourceDecision;
 };
 
 const requestTimeoutMs = 6000;
@@ -23,6 +30,7 @@ type XiaoyuzhouEpisodeData = {
   enclosure?: {
     url?: string;
   };
+  duration?: number;
   media?: {
     source?: {
       url?: string;
@@ -298,18 +306,29 @@ function parseXiaoyuzhouEpisodeData(html: string) {
   const author =
     episode?.podcast?.author ||
     episode?.podcast?.podcasters?.find((podcaster) => podcaster.nickname)?.nickname;
+  const durationSeconds = episode?.duration;
+  const audioUrl =
+    episode?.media?.source?.url ||
+    episode?.enclosure?.url ||
+    schemaEpisode?.associatedMedia?.contentUrl;
+  const transcriptSourceDecision = decideTranscriptSource({
+    candidateRoots: [nextData, schemaEpisode, episode],
+    description: episode?.description,
+    shownotes: episode?.shownotes,
+    audioUrl,
+    durationSeconds,
+  });
 
   return {
     title: episode?.title || schemaEpisode?.name,
     description,
     publishedAt: toIsoDate(episode?.pubDate || schemaEpisode?.datePublished),
     author,
-    audioUrl:
-      episode?.media?.source?.url ||
-      episode?.enclosure?.url ||
-      schemaEpisode?.associatedMedia?.contentUrl,
+    audioUrl,
     coverUrl: episode?.podcast?.image?.picUrl,
     podcastTitle: episode?.podcast?.title || schemaEpisode?.partOfSeries?.name,
+    durationSeconds,
+    transcriptSourceDecision,
   };
 }
 
@@ -416,6 +435,8 @@ export async function extractLinkMetadata(inputUrl: string): Promise<LinkMetadat
         publishedAt: episodeData.publishedAt,
         audioUrl: episodeData.audioUrl || getMetaContent(html, ["og:audio"]),
         coverUrl: episodeData.coverUrl || getMetaContent(html, ["og:image"]),
+        durationSeconds: episodeData.durationSeconds,
+        transcriptSourceDecision: episodeData.transcriptSourceDecision,
       };
     }
 
