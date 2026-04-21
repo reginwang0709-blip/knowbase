@@ -439,9 +439,11 @@ export default function KnowledgePackClient({ item }: KnowledgePackClientProps) 
                 >
                   <div className="mb-2 flex flex-wrap items-center gap-3 text-xs">
                     <span className="font-semibold text-sage">{block.time}</span>
-                    <span className="rounded-full bg-panel px-3 py-1 text-muted">
-                      {block.speaker}
-                    </span>
+                    {block.speaker ? (
+                      <span className="rounded-full bg-panel px-3 py-1 text-muted">
+                        {block.speaker}
+                      </span>
+                    ) : null}
                   </div>
                   <p className="text-sm leading-7 text-ink">
                     {renderMarkedText({

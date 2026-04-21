@@ -16,21 +16,53 @@ export type LibraryData = {
 };
 
 export type CreateParseTaskResult = {
-  task: {
-    id?: string;
-    url?: string;
-    title?: string | null;
-    platform?: string | null;
-    content_id?: string | null;
-  };
-  contentId: string;
+  task: ParseTaskResult["task"];
+  taskId?: string;
+  contentId?: string;
   duplicated?: boolean;
+  code?: string;
+  message?: string;
+};
+
+export type ParseTaskResult = {
+  task: {
+    id: string;
+    url: string;
+    title: string | null;
+    platform: string | null;
+    status:
+      | "submitted"
+      | "detecting_source"
+      | "extracting_content"
+      | "generating_transcript"
+      | "generating_knowledge_pack"
+      | "completed"
+      | "failed";
+    progress: number;
+    content_id: string | null;
+    error_message?: string | null;
+  };
+  taskId?: string;
+  contentId?: string;
+  duplicated?: boolean;
+  code?: string;
+  message?: string;
 };
 
 export type DeleteContentResult = {
   ok: boolean;
   deletedContentId: string;
 };
+
+export class ContentFetchError extends Error {
+  status: number;
+
+  constructor(message: string, status: number) {
+    super(message);
+    this.name = "ContentFetchError";
+    this.status = status;
+  }
+}
 
 export function getFallbackLibraryData(): LibraryData {
   return {
@@ -77,20 +109,60 @@ export async function createParseTask(
     body: JSON.stringify({ url }),
   });
 
-  if (!response.ok) {
-    throw new Error("Parse task request failed.");
+  if (!response.ok && response.status !== 409) {
+    let errorMessage = "Parse task request failed.";
+
+    try {
+      const data = (await response.json()) as { error?: unknown };
+
+      if (typeof data.error === "string" && data.error.trim()) {
+        errorMessage = data.error;
+      }
+    } catch {
+      // Keep the default message when the error response is not JSON.
+    }
+
+    throw new Error(errorMessage);
   }
 
   const data = (await response.json()) as Partial<CreateParseTaskResult>;
 
-  if (!data.contentId) {
-    throw new Error("Parse task response is missing contentId.");
+  if (!data.task || typeof data.task.id !== "string") {
+    throw new Error("Parse task response is missing task.");
   }
 
   return {
-    task: data.task ?? {},
+    task: data.task,
+    taskId: data.taskId ?? data.task.id,
     contentId: data.contentId,
     duplicated: data.duplicated,
+    code: data.code,
+    message: data.message,
+  };
+}
+
+export async function getParseTaskById(id: string): Promise<ParseTaskResult> {
+  const response = await fetch(`/api/parse-tasks/${id}`, {
+    cache: "no-store",
+  });
+
+  if (!response.ok) {
+    throw new Error("Parse task status request failed.");
+  }
+
+  const data = (await response.json()) as Partial<ParseTaskResult>;
+
+  if (!data.task || typeof data.task.id !== "string") {
+    throw new Error("Parse task status response is missing task.");
+  }
+
+  return {
+    task: data.task,
+    taskId: data.taskId ?? data.task.id,
+    contentId: data.contentId,
+    duplicated: data.duplicated,
+    code: data.code,
+    message: data.message,
   };
 }
 
@@ -112,11 +184,8 @@ export async function getKnowledgeItemById(
   id: string,
   baseUrl?: string,
 ): Promise<KnowledgeItem | undefined> {
-  const fallbackItem =
-    getMockKnowledgeItemById(id) ?? getMockKnowledgeItemById("demo-001");
-
   if (id === "demo-001") {
-    return fallbackItem;
+    return getMockKnowledgeItemById("demo-001");
   }
 
   try {
@@ -127,8 +196,12 @@ export async function getKnowledgeItemById(
       cache: "no-store",
     });
 
+    if (response.status === 404) {
+      throw new ContentFetchError("内容不存在。", 404);
+    }
+
     if (!response.ok) {
-      return fallbackItem;
+      throw new ContentFetchError("内容加载失败，请稍后重试。", response.status);
     }
 
     const item = (await response.json()) as Partial<KnowledgeItem>;
@@ -145,11 +218,15 @@ export async function getKnowledgeItemById(
       !Array.isArray(item.glossaryTerms) ||
       !Array.isArray(item.transcriptBlocks)
     ) {
-      return fallbackItem;
+      throw new ContentFetchError("内容数据异常，暂时无法展示。", 500);
     }
 
     return item as KnowledgeItem;
-  } catch {
-    return fallbackItem;
+  } catch (error) {
+    if (error instanceof ContentFetchError) {
+      throw error;
+    }
+
+    throw new ContentFetchError("内容加载失败，请稍后重试。", 500);
   }
 }

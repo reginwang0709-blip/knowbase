@@ -3,68 +3,97 @@
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
-import { createParseTask } from "@/lib/data-access";
+import {
+  createParseTask,
+  getParseTaskById,
+  type ParseTaskResult,
+} from "@/lib/data-access";
 
 const statusSteps = [
-  "已提交",
-  "正在识别链接来源",
-  "正在提取内容信息",
-  "正在生成逐字稿",
-  "正在生成知识包",
-  "已完成",
-];
+  "submitted",
+  "detecting_source",
+  "extracting_content",
+  "generating_transcript",
+  "generating_knowledge_pack",
+  "completed",
+] as const;
 
-const fallbackContentId = "demo-001";
+const statusLabels: Record<ParseTaskResult["task"]["status"], string> = {
+  submitted: "已提交",
+  detecting_source: "正在识别链接来源",
+  extracting_content: "正在提取内容信息",
+  generating_transcript: "正在生成逐字稿",
+  generating_knowledge_pack: "正在生成知识包",
+  completed: "已完成",
+  failed: "解析失败",
+};
+
+const activeStatuses = new Set<ParseTaskResult["task"]["status"]>([
+  "submitted",
+  "detecting_source",
+  "extracting_content",
+  "generating_transcript",
+  "generating_knowledge_pack",
+]);
+
+function getStepIndex(status?: ParseTaskResult["task"]["status"]) {
+  if (!status) {
+    return -1;
+  }
+
+  if (status === "failed") {
+    return statusSteps.findIndex((step) => step === "generating_transcript");
+  }
+
+  return statusSteps.findIndex((step) => step === status);
+}
 
 export default function HomePage() {
   const router = useRouter();
   const [url, setUrl] = useState("");
-  const [isSubmitted, setIsSubmitted] = useState(false);
-  const [stepIndex, setStepIndex] = useState(0);
   const [submittedAt, setSubmittedAt] = useState("");
-  const [submittedUrl, setSubmittedUrl] = useState("");
-  const [taskTitle, setTaskTitle] = useState("等待提交");
-  const [taskPlatform, setTaskPlatform] = useState("待识别");
-  const [contentId, setContentId] = useState(fallbackContentId);
-  const [isParseRequestDone, setIsParseRequestDone] = useState(false);
-  const [isUsingFallback, setIsUsingFallback] = useState(false);
+  const [taskResult, setTaskResult] = useState<ParseTaskResult | null>(null);
+  const [requestError, setRequestError] = useState("");
+  const [statusMessage, setStatusMessage] = useState("");
+  const [isSubmitting, setIsSubmitting] = useState(false);
   const hasNavigatedRef = useRef(false);
 
   useEffect(() => {
-    if (!isSubmitted || stepIndex >= statusSteps.length - 1) {
+    if (!taskResult?.task.id || !activeStatuses.has(taskResult.task.status)) {
       return;
     }
 
-    const timer = window.setTimeout(() => {
-      setStepIndex((current) => current + 1);
-    }, 900);
+    const timer = window.setTimeout(async () => {
+      try {
+        const latestTask = await getParseTaskById(taskResult.task.id);
+
+        setTaskResult(latestTask);
+        setStatusMessage(latestTask.message ?? "");
+      } catch (error) {
+        setStatusMessage(
+          error instanceof Error ? error.message : "任务状态查询失败。",
+        );
+      }
+    }, 2500);
 
     return () => window.clearTimeout(timer);
-  }, [isSubmitted, stepIndex]);
+  }, [taskResult]);
 
   useEffect(() => {
+    const contentId = taskResult?.task.content_id;
+
     if (
-      !isSubmitted ||
-      !isParseRequestDone ||
-      hasNavigatedRef.current ||
-      stepIndex < statusSteps.length - 1
+      !taskResult ||
+      taskResult.task.status !== "completed" ||
+      !contentId ||
+      hasNavigatedRef.current
     ) {
       return;
     }
 
     hasNavigatedRef.current = true;
     router.push(`/content/${contentId}`);
-  }, [
-    contentId,
-    isParseRequestDone,
-    isSubmitted,
-    router,
-    stepIndex,
-  ]);
-
-  const progress = Math.round(((stepIndex + 1) / statusSteps.length) * 100);
-  const currentStatus =
-    isSubmitted && !isParseRequestDone ? "正在生成" : statusSteps[stepIndex];
+  }, [router, taskResult]);
 
   const startParsing = async () => {
     const trimmedUrl = url.trim();
@@ -73,6 +102,11 @@ export default function HomePage() {
       return;
     }
 
+    setIsSubmitting(true);
+    setRequestError("");
+    setStatusMessage("");
+    setTaskResult(null);
+    hasNavigatedRef.current = false;
     setSubmittedAt(
       new Intl.DateTimeFormat("zh-CN", {
         month: "2-digit",
@@ -81,31 +115,34 @@ export default function HomePage() {
         minute: "2-digit",
       }).format(new Date()),
     );
-    setIsSubmitted(true);
-    setStepIndex(0);
-    setSubmittedUrl(trimmedUrl);
-    setTaskTitle("等待提交");
-    setTaskPlatform("待识别");
-    setContentId(fallbackContentId);
-    setIsParseRequestDone(false);
-    setIsUsingFallback(false);
-    hasNavigatedRef.current = false;
 
     try {
       const result = await createParseTask(trimmedUrl);
 
-      setContentId(result.contentId);
-      setTaskTitle(result.task.title || "未命名内容");
-      setTaskPlatform(result.task.platform || "未识别");
-    } catch {
-      setContentId(fallbackContentId);
-      setTaskTitle("演示内容");
-      setTaskPlatform("演示内容");
-      setIsUsingFallback(true);
+      setTaskResult(result);
+      setStatusMessage(result.message ?? "");
+    } catch (error) {
+      setRequestError(
+        error instanceof Error ? error.message : "解析任务提交失败。",
+      );
     } finally {
-      setIsParseRequestDone(true);
+      setIsSubmitting(false);
     }
   };
+
+  const currentTask = taskResult?.task;
+  const isSubmitted = Boolean(currentTask || requestError);
+  const currentStatus = currentTask
+    ? statusLabels[currentTask.status]
+    : requestError
+      ? "解析失败"
+      : "等待提交";
+  const progress = currentTask?.progress ?? 0;
+  const stepIndex = getStepIndex(currentTask?.status);
+  const contentId = currentTask?.content_id ?? taskResult?.contentId ?? "";
+  const canViewContent =
+    currentTask?.status === "completed" && typeof contentId === "string" && contentId.length > 0;
+  const isTaskRunning = currentTask ? activeStatuses.has(currentTask.status) : false;
 
   return (
     <main className="kb-container">
@@ -135,20 +172,25 @@ export default function HomePage() {
               value={url}
               onChange={(event) => setUrl(event.target.value)}
               placeholder="粘贴文章、播客或视频链接"
-              disabled={isSubmitted && !isParseRequestDone}
+              disabled={isSubmitting || isTaskRunning}
             />
             <button
               className="kb-button shrink-0"
               type="button"
               onClick={startParsing}
-              disabled={isSubmitted && !isParseRequestDone}
+              disabled={isSubmitting || isTaskRunning}
             >
               生成知识包
             </button>
           </div>
           <p className="mt-3 text-sm text-muted">
-            当前为本地演示版本，处理进度和结果使用 mock 数据。
+            首页会根据真实任务状态轮询显示进度，不再使用本地假进度。
           </p>
+          <div className="mt-5">
+            <Link href="/content/demo-001" className="kb-button-secondary">
+              查看示例知识包
+            </Link>
+          </div>
         </div>
 
         <div className="kb-card min-h-[360px] p-6">
@@ -159,24 +201,7 @@ export default function HomePage() {
                 知识包生成进度
               </h2>
               <p className="mt-4 leading-7 text-muted">
-                提交链接后，你可以看到来源识别、内容提取、逐字稿生成和知识包整理的完整进度。
-              </p>
-              <dl className="mt-6 grid gap-3 text-sm sm:grid-cols-2">
-                <div>
-                  <dt className="text-muted">标题</dt>
-                  <dd className="mt-1 font-medium text-ink">{taskTitle}</dd>
-                </div>
-                <div>
-                  <dt className="text-muted">来源平台</dt>
-                  <dd className="mt-1 font-medium text-ink">{taskPlatform}</dd>
-                </div>
-                <div className="sm:col-span-2">
-                  <dt className="text-muted">链接</dt>
-                  <dd className="mt-1 font-medium text-ink">粘贴链接后开始识别</dd>
-                </div>
-              </dl>
-              <p className="mt-3 leading-7 text-muted">
-                生成完成后，可以直接进入知识包或回到知识库继续管理。
+                提交链接后，你可以看到来源识别、内容提取、逐字稿生成和知识包整理的真实任务状态。
               </p>
             </div>
           ) : (
@@ -185,7 +210,7 @@ export default function HomePage() {
                 <div>
                   <p className="kb-label mb-3">解析任务</p>
                   <h2 className="text-2xl font-semibold leading-snug text-ink">
-                    {taskTitle}
+                    {currentTask?.title || "等待解析"}
                   </h2>
                 </div>
                 <span className="rounded-full bg-sage/10 px-3 py-1 text-xs font-semibold text-sage">
@@ -197,12 +222,14 @@ export default function HomePage() {
                 <div>
                   <dt className="text-muted">链接</dt>
                   <dd className="mt-1 break-all font-medium text-ink">
-                    {submittedUrl}
+                    {currentTask?.url || url.trim()}
                   </dd>
                 </div>
                 <div>
                   <dt className="text-muted">来源平台</dt>
-                  <dd className="mt-1 font-medium text-ink">{taskPlatform}</dd>
+                  <dd className="mt-1 font-medium text-ink">
+                    {currentTask?.platform || "待识别"}
+                  </dd>
                 </div>
                 <div>
                   <dt className="text-muted">提交时间</dt>
@@ -213,9 +240,22 @@ export default function HomePage() {
                   <dd className="mt-1 font-medium text-ink">{currentStatus}</dd>
                 </div>
               </dl>
-              {isUsingFallback ? (
+
+              {statusMessage ? (
                 <p className="mt-4 rounded-lg bg-panel p-3 text-sm leading-6 text-muted">
-                  当前使用演示内容，生成完成后会打开 demo 知识包。
+                  {statusMessage}
+                </p>
+              ) : null}
+
+              {requestError ? (
+                <p className="mt-4 rounded-lg bg-panel p-3 text-sm leading-6 text-coral">
+                  {requestError}
+                </p>
+              ) : null}
+
+              {currentTask?.status === "failed" && currentTask.error_message ? (
+                <p className="mt-4 rounded-lg bg-panel p-3 text-sm leading-6 text-coral">
+                  {currentTask.error_message}
                 </p>
               ) : null}
 
@@ -234,10 +274,7 @@ export default function HomePage() {
 
               <ol className="mt-6 space-y-3">
                 {statusSteps.map((step, index) => (
-                  <li
-                    className="flex items-center gap-3 text-sm"
-                    key={step}
-                  >
+                  <li className="flex items-center gap-3 text-sm" key={step}>
                     <span
                       className={`h-2.5 w-2.5 rounded-full ${
                         index <= stepIndex ? "bg-sage" : "bg-line"
@@ -246,13 +283,13 @@ export default function HomePage() {
                     <span
                       className={index <= stepIndex ? "text-ink" : "text-muted"}
                     >
-                      {step}
+                      {statusLabels[step]}
                     </span>
                   </li>
                 ))}
               </ol>
 
-              {currentStatus === "已完成" ? (
+              {canViewContent ? (
                 <Link className="kb-button mt-8" href={`/content/${contentId}`}>
                   查看知识包
                 </Link>

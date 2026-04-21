@@ -1,6 +1,7 @@
 import "server-only";
 
 import type { TranscriptBlock } from "@/lib/mock-data";
+import { postProcessTranscriptBlocks } from "@/lib/source-adapters/xiaoyuzhou";
 
 const defaultBaseUrl = "https://dashscope.aliyuncs.com/api/v1";
 
@@ -54,10 +55,17 @@ export type FunAsrTranscriptionResult = {
   transcripts?: FunAsrTranscript[];
 };
 
+const pollIntervalMs = 3000;
+const maxPollCount = 20;
+
 function getDashscopeBaseUrl() {
-  return (
+  const configuredBaseUrl =
     process.env.DASHSCOPE_BASE_URL?.trim().replace(/\/+$/, "") ||
-    defaultBaseUrl
+    defaultBaseUrl;
+
+  return configuredBaseUrl.replace(
+    /\/api\/v1(?:\/api\/v1)+$/i,
+    "/api/v1",
   );
 }
 
@@ -71,11 +79,17 @@ function getDashscopeApiKey() {
   return apiKey;
 }
 
-function getHeaders() {
+function getSubmitHeaders() {
   return {
     Authorization: `Bearer ${getDashscopeApiKey()}`,
     "Content-Type": "application/json",
     "X-DashScope-Async": "enable",
+  };
+}
+
+function getQueryHeaders() {
+  return {
+    Authorization: `Bearer ${getDashscopeApiKey()}`,
   };
 }
 
@@ -100,6 +114,18 @@ function getErrorMessage(data: unknown, fallback: string) {
   return fallback;
 }
 
+function buildDashscopeUrl(path: string) {
+  const normalizedPath = path.startsWith("/") ? path : `/${path}`;
+
+  return `${getDashscopeBaseUrl()}${normalizedPath}`;
+}
+
+function getFetchErrorMessage(error: unknown) {
+  return error instanceof Error && error.message
+    ? error.message
+    : "unknown fetch error";
+}
+
 function msToTimestamp(value: number | undefined) {
   if (typeof value !== "number" || !Number.isFinite(value) || value < 0) {
     return "00:00";
@@ -119,20 +145,39 @@ function msToTimestamp(value: number | undefined) {
   return [minutes, seconds].map((part) => String(part).padStart(2, "0")).join(":");
 }
 
+function sleep(ms: number) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+export function isPublicHttpUrl(value: string) {
+  try {
+    const url = new URL(value);
+
+    return url.protocol === "http:" || url.protocol === "https:";
+  } catch {
+    return false;
+  }
+}
+
 export async function submitFunAsrTask(audioUrl: string) {
-  const response = await fetch(
-    `${getDashscopeBaseUrl()}/services/audio/asr/transcription`,
-    {
+  let response: Response;
+
+  try {
+    response = await fetch(buildDashscopeUrl("/services/audio/asr/transcription"), {
       method: "POST",
-      headers: getHeaders(),
+      headers: getSubmitHeaders(),
       body: JSON.stringify({
         model: "fun-asr",
         input: {
           file_urls: [audioUrl],
         },
       }),
-    },
-  );
+    });
+  } catch (error) {
+    throw new Error(
+      `提交 Fun-ASR 任务时网络请求失败：${getFetchErrorMessage(error)}`,
+    );
+  }
 
   const data = (await response.json().catch(() => null)) as FunAsrSubmitResponse | null;
 
@@ -156,10 +201,19 @@ export async function submitFunAsrTask(audioUrl: string) {
 }
 
 export async function queryFunAsrTask(taskId: string) {
-  const response = await fetch(`${getDashscopeBaseUrl()}/tasks/${taskId}`, {
-    method: "POST",
-    headers: getHeaders(),
-  });
+  let response: Response;
+
+  try {
+    response = await fetch(buildDashscopeUrl(`/tasks/${taskId}`), {
+      method: "GET",
+      headers: getQueryHeaders(),
+      cache: "no-store",
+    });
+  } catch (error) {
+    throw new Error(
+      `查询 Fun-ASR 任务时网络请求失败：${getFetchErrorMessage(error)}`,
+    );
+  }
 
   const data = (await response.json().catch(() => null)) as FunAsrQueryResponse | null;
 
@@ -172,7 +226,7 @@ export async function queryFunAsrTask(taskId: string) {
   const output = data?.output;
 
   if (!output?.task_id || !output.task_status) {
-    throw new Error("Fun-ASR 查询成功，但响应中缺少任务状态。");
+    throw new Error("Fun-ASR 查询响应结构异常：缺少 task_id 或 task_status。");
   }
 
   const succeededResult =
@@ -191,15 +245,27 @@ export async function queryFunAsrTask(taskId: string) {
 }
 
 export async function fetchFunAsrTranscription(transcriptionUrl: string) {
-  const response = await fetch(transcriptionUrl, {
-    method: "GET",
-    cache: "no-store",
-  });
+  let response: Response;
+
+  try {
+    response = await fetch(transcriptionUrl, {
+      method: "GET",
+      cache: "no-store",
+    });
+  } catch (error) {
+    throw new Error(
+      `下载 transcription_url 失败：${getFetchErrorMessage(error)}`,
+    );
+  }
 
   const data = (await response.json().catch(() => null)) as FunAsrTranscriptionResult | null;
 
-  if (!response.ok || !data) {
+  if (!response.ok) {
     throw new Error(`下载 Fun-ASR 转写结果失败，HTTP ${response.status}`);
+  }
+
+  if (!data) {
+    throw new Error("Fun-ASR 转写结果结构异常：返回内容不是有效 JSON。");
   }
 
   return data;
@@ -240,5 +306,51 @@ export function transcriptionToTranscriptBlocks(result: FunAsrTranscriptionResul
     throw new Error("Fun-ASR 返回成功，但没有可转换的 transcriptBlocks。");
   }
 
-  return blocks;
+  return postProcessTranscriptBlocks(blocks);
+}
+
+export async function transcribeAudioWithFunAsr(audioUrl: string) {
+  if (!audioUrl) {
+    throw new Error("缺少 audioUrl，无法调用 Fun-ASR。");
+  }
+
+  if (!isPublicHttpUrl(audioUrl)) {
+    throw new Error("audioUrl 必须是可访问的公网 http(s) 地址。");
+  }
+
+  const submitted = await submitFunAsrTask(audioUrl);
+
+  for (let attempt = 0; attempt < maxPollCount; attempt += 1) {
+    const queried = await queryFunAsrTask(submitted.taskId);
+
+    if (queried.taskStatus === "SUCCEEDED") {
+      if (!queried.transcriptionUrl) {
+        throw new Error("Fun-ASR 任务成功，但缺少 transcription_url。");
+      }
+
+      const transcription = await fetchFunAsrTranscription(
+        queried.transcriptionUrl,
+      );
+      const transcriptBlocks = transcriptionToTranscriptBlocks(transcription);
+
+      return {
+        taskId: queried.taskId,
+        taskStatus: queried.taskStatus,
+        transcriptionUrl: queried.transcriptionUrl,
+        transcriptBlocks,
+      };
+    }
+
+    if (queried.taskStatus === "FAILED") {
+      throw new Error(queried.failureMessage || "Fun-ASR 任务执行失败。");
+    }
+
+    if (attempt < maxPollCount - 1) {
+      await sleep(pollIntervalMs);
+    }
+  }
+
+  throw new Error(
+    `Fun-ASR 转写超时，已轮询 ${maxPollCount} 次，间隔 ${pollIntervalMs / 1000} 秒。`,
+  );
 }

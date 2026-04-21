@@ -27,6 +27,7 @@ export type Database = {
           progress: number;
           content_id: string | null;
           error_message: string | null;
+          processing_payload: Json;
           created_at: string;
           updated_at: string;
         };
@@ -47,6 +48,7 @@ export type Database = {
           progress?: number;
           content_id?: string | null;
           error_message?: string | null;
+          processing_payload?: Json;
           created_at?: string;
           updated_at?: string;
         };
@@ -67,6 +69,7 @@ export type Database = {
           progress?: number;
           content_id?: string | null;
           error_message?: string | null;
+          processing_payload?: Json;
           created_at?: string;
           updated_at?: string;
         };

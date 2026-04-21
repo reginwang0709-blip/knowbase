@@ -7,6 +7,10 @@ import type {
   RecentTopic,
 } from "./mock-data";
 import type { Database, Json } from "./supabase/types";
+import {
+  buildSectionsFromTimestampDirectory,
+  postProcessTranscriptBlocks,
+} from "./source-adapters/xiaoyuzhou";
 
 type ContentRow = Database["public"]["Tables"]["contents"]["Row"];
 type CategoryRow = Database["public"]["Tables"]["library_categories"]["Row"];
@@ -23,6 +27,8 @@ type ContentPayload = {
   sourceMetadata?: {
     audioUrl?: string;
     coverUrl?: string;
+    transcriptSource?: "demo" | "existing_transcript" | "asr" | "asr_pending";
+    asrProvider?: "dashscope-funasr";
   };
 };
 
@@ -47,6 +53,25 @@ function toPayload(value: Json): ContentPayload {
 
 function isKeywordArray(value: unknown): value is Keyword[] {
   return Array.isArray(value);
+}
+
+function hasResolvedTranscript(row: ContentRow) {
+  const payload = toPayload(row.content_payload);
+  const transcriptBlocks = Array.isArray(payload.transcriptBlocks)
+    ? payload.transcriptBlocks
+    : [];
+
+  return Boolean(
+    transcriptBlocks.length > 0 &&
+      (payload.sourceMetadata?.transcriptSource === "asr" ||
+        payload.sourceMetadata?.transcriptSource === "existing_transcript"),
+  );
+}
+
+function shouldHideFromLibrary(row: ContentRow) {
+  const isXiaoyuzhouEpisode = row.source_url.includes("xiaoyuzhoufm.com/episode/");
+
+  return isXiaoyuzhouEpisode && !hasResolvedTranscript(row);
 }
 
 export function buildContentPayloadFromMockItem(item: KnowledgeItem): Json {
@@ -105,6 +130,15 @@ export function extractTopKeywords(
 
 export function mapContentRowToKnowledgeItem(row: ContentRow): KnowledgeItem {
   const payload = toPayload(row.content_payload);
+  const transcriptBlocks = Array.isArray(payload.transcriptBlocks)
+    ? postProcessTranscriptBlocks(payload.transcriptBlocks)
+    : [];
+  const shownoteSections = buildSectionsFromTimestampDirectory(
+    row.summary,
+    transcriptBlocks,
+  );
+  const sections =
+    shownoteSections.length > 0 ? shownoteSections : (payload.sections ?? []);
 
   return {
     id: row.id,
@@ -116,10 +150,10 @@ export function mapContentRowToKnowledgeItem(row: ContentRow): KnowledgeItem {
     parsedAt: row.parsed_at,
     summary: row.summary,
     keywords: payload.keywords ?? [],
-    sections: payload.sections ?? [],
+    sections,
     chapters: payload.chapters ?? [],
     glossaryTerms: payload.glossaryTerms ?? [],
-    transcriptBlocks: payload.transcriptBlocks ?? [],
+    transcriptBlocks,
   };
 }
 
@@ -157,7 +191,9 @@ export function mapLibraryRowsToResponse({
   recentTopics: RecentTopic[];
   recentContents: LibraryContentItem[];
 } {
-  if (contents.length === 0) {
+  const visibleContents = contents.filter((content) => !shouldHideFromLibrary(content));
+
+  if (visibleContents.length === 0) {
     return {
       libraryCategories: [],
       recentTopics: [],
@@ -167,7 +203,7 @@ export function mapLibraryRowsToResponse({
 
   const categoryById = new Map(categories.map((category) => [category.id, category]));
   const topicById = new Map(topics.map((topic) => [topic.id, topic]));
-  const contentById = new Map(contents.map((content) => [content.id, content]));
+  const contentById = new Map(visibleContents.map((content) => [content.id, content]));
   const assignmentsByTopicId = new Map<string, AssignmentRow[]>();
   const firstAssignmentByContentId = new Map<string, AssignmentRow>();
 
@@ -268,7 +304,7 @@ export function mapLibraryRowsToResponse({
     .sort((first, second) => second.contentCount - first.contentCount)
     .slice(0, 8);
 
-  const recentContents = [...contents]
+  const recentContents = [...visibleContents]
     .sort(
       (first, second) =>
         new Date(second.parsed_at).getTime() - new Date(first.parsed_at).getTime(),

@@ -1,4 +1,4 @@
-import type { TranscriptBlock } from "@/lib/mock-data";
+import type { Section, TranscriptBlock } from "@/lib/mock-data";
 
 const transcriptCandidateKeys = new Set([
   "transcript",
@@ -31,6 +31,12 @@ export type TranscriptSourceDecision = {
   reason: string;
   transcriptText?: string;
   transcriptBlocks?: TranscriptBlock[];
+};
+
+type TimestampSectionSeed = {
+  title: string;
+  startTimestamp: string;
+  order: number;
 };
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -91,6 +97,384 @@ export function cleanTranscriptLikeText(text: string) {
   return removeObviousNavigation(removeLinkOnlyLines(stripHtml(text)))
     .replace(/\s+/g, " ")
     .trim();
+}
+
+export function truncateText(text: string, maxLength = 200) {
+  const normalized = text.trim();
+
+  if (normalized.length <= maxLength) {
+    return normalized;
+  }
+
+  return `${normalized.slice(0, maxLength).trimEnd()}…`;
+}
+
+function normalizeTimestamp(raw: string) {
+  const parts = raw.split(":").map((part) => part.trim());
+
+  if (parts.some((part) => !/^\d+$/.test(part))) {
+    return "";
+  }
+
+  if (parts.length === 2) {
+    const [minutes, seconds] = parts;
+
+    return `${minutes.padStart(2, "0")}:${seconds.padStart(2, "0")}`;
+  }
+
+  if (parts.length === 3) {
+    const [hours, minutes, seconds] = parts;
+
+    return [hours, minutes, seconds]
+      .map((part) => part.padStart(2, "0"))
+      .join(":");
+  }
+
+  return "";
+}
+
+function timestampToSeconds(value?: string) {
+  if (!value) {
+    return null;
+  }
+
+  const normalized = normalizeTimestamp(value);
+
+  if (!normalized) {
+    return null;
+  }
+
+  const parts = normalized.split(":").map((part) => Number(part));
+
+  if (parts.some((part) => Number.isNaN(part))) {
+    return null;
+  }
+
+  if (parts.length === 2) {
+    return parts[0] * 60 + parts[1];
+  }
+
+  if (parts.length === 3) {
+    return parts[0] * 3600 + parts[1] * 60 + parts[2];
+  }
+
+  return null;
+}
+
+function normalizeSpeakerLabel(speaker: string) {
+  const trimmed = speaker.trim();
+
+  if (!trimmed) {
+    return "";
+  }
+
+  if (/^说话人(?:\s*\d+)?$/.test(trimmed)) {
+    return "说话人";
+  }
+
+  return trimmed;
+}
+
+function cleanSectionTitle(value: string) {
+  return value
+    .replace(/^[\-\-—–:：·•\s]+/, "")
+    .replace(/[\-\-—–:：·•\s]+$/, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function isLikelyFillerOnly(text: string) {
+  const normalized = text.replace(/[,.!?，。！？、~…\s]/g, "");
+
+  return /^(嗯|呃|额|啊)+$/.test(normalized);
+}
+
+function cleanTranscriptBlockText(text: string) {
+  const cleaned = text
+    .replace(
+      /(^|[\s，。！？、,!?])(?:嗯+|呃+|额+|啊+)(?:[.。…~]*)?(?=$|[\s，。！？、,!?])/g,
+      "$1",
+    )
+    .replace(/([，。！？、,!?])\1+/g, "$1")
+    .replace(/^[，。！？、,!?；;：:]+/, "")
+    .replace(/\s+/g, " ")
+    .trim();
+
+  return isLikelyFillerOnly(cleaned) ? "" : cleaned;
+}
+
+function buildTimestampLineRegex() {
+  return /^\s*(?:\[(\d{2}:\d{2}(?::\d{2})?)\]|(\d{2}:\d{2}(?::\d{2})?))(?:\s*[-—–:：]\s*|\s+)(.+?)\s*$/;
+}
+
+export function extractTimestampSectionsFromText(text: string): TimestampSectionSeed[] {
+  const sourceText = stripHtml(text).replace(/\r\n/g, "\n");
+  const lines = sourceText
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean);
+  const matches: TimestampSectionSeed[] = [];
+  const pattern = buildTimestampLineRegex();
+
+  for (const line of lines) {
+    const match = line.match(pattern);
+
+    if (!match) {
+      continue;
+    }
+
+    const startTimestamp = normalizeTimestamp(match[1] ?? match[2] ?? "");
+    const title = cleanSectionTitle(match[3] ?? "");
+
+    if (!startTimestamp || !title) {
+      continue;
+    }
+
+    matches.push({
+      title,
+      startTimestamp,
+      order: matches.length + 1,
+    });
+  }
+
+  if (matches.length >= 3) {
+    return matches;
+  }
+
+  const inlineSource = sourceText
+    .replace(/\s+/g, " ")
+    .replace(/时间线[:：]/g, " 时间线： ")
+    .trim();
+  const inlinePattern =
+    /(?:^|[\s（(])(?:\[(\d{2}:\d{2}(?::\d{2})?)\]|(\d{2}:\d{2}(?::\d{2})?))(?:\s*[-—–:：]\s*|\s+)([\s\S]*?)(?=(?:\s+(?:\[\d{2}:\d{2}(?::\d{2})?\]|\d{2}:\d{2}(?::\d{2})?)(?:\s*[-—–:：]\s*|\s+))|$)/g;
+  const inlineMatches: TimestampSectionSeed[] = [];
+
+  for (const match of inlineSource.matchAll(inlinePattern)) {
+    const startTimestamp = normalizeTimestamp(match[1] ?? match[2] ?? "");
+    const title = cleanSectionTitle(match[3] ?? "");
+
+    if (!startTimestamp || !title) {
+      continue;
+    }
+
+    inlineMatches.push({
+      title,
+      startTimestamp,
+      order: inlineMatches.length + 1,
+    });
+  }
+
+  return inlineMatches.length >= 3 ? inlineMatches : [];
+}
+
+function findClosestBlockIdByTimestamp(
+  blocks: TranscriptBlock[],
+  timestamp?: string,
+  fallbackIndex = 0,
+) {
+  if (!blocks.length) {
+    return "";
+  }
+
+  const targetSeconds = timestampToSeconds(timestamp);
+
+  if (targetSeconds === null) {
+    return blocks[Math.min(fallbackIndex, blocks.length - 1)]?.id ?? "";
+  }
+
+  let closestBlock = blocks[0];
+  let smallestDiff = Number.POSITIVE_INFINITY;
+
+  for (const block of blocks) {
+    const blockSeconds = timestampToSeconds(block.time);
+
+    if (blockSeconds === null) {
+      continue;
+    }
+
+    const diff = Math.abs(blockSeconds - targetSeconds);
+
+    if (diff < smallestDiff) {
+      smallestDiff = diff;
+      closestBlock = block;
+    }
+  }
+
+  return closestBlock?.id ?? blocks[Math.min(fallbackIndex, blocks.length - 1)]?.id ?? "";
+}
+
+export function buildSectionsFromTimestampDirectory(
+  text: string,
+  transcriptBlocks: TranscriptBlock[],
+): Section[] {
+  const sectionSeeds = extractTimestampSectionsFromText(text);
+
+  if (sectionSeeds.length === 0) {
+    return [];
+  }
+
+  return sectionSeeds.map((section, index) => {
+    const nextSection = sectionSeeds[index + 1];
+    const startBlockId = findClosestBlockIdByTimestamp(
+      transcriptBlocks,
+      section.startTimestamp,
+      index,
+    );
+    const endBlockId =
+      findClosestBlockIdByTimestamp(
+        transcriptBlocks,
+        nextSection?.startTimestamp,
+        Math.min(index + 1, transcriptBlocks.length - 1),
+      ) || undefined;
+
+    return {
+      id: `section-${String(index + 1).padStart(3, "0")}`,
+      title: section.title,
+      summary: section.title,
+      order: index + 1,
+      startBlockId,
+      endBlockId,
+      startTimestamp: section.startTimestamp,
+      endTimestamp: nextSection?.startTimestamp,
+    };
+  });
+}
+
+function shouldMergeBlocks(current: TranscriptBlock, next: TranscriptBlock) {
+  const currentSpeaker = normalizeSpeakerLabel(current.speaker);
+  const nextSpeaker = normalizeSpeakerLabel(next.speaker);
+  const sameSpeaker =
+    currentSpeaker === nextSpeaker ||
+    !currentSpeaker ||
+    !nextSpeaker;
+
+  if (!sameSpeaker) {
+    return false;
+  }
+
+  const combinedLength = `${current.text} ${next.text}`.trim().length;
+
+  if (combinedLength > 280) {
+    return false;
+  }
+
+  const currentSeconds = timestampToSeconds(current.time);
+  const nextSeconds = timestampToSeconds(next.time);
+
+  if (
+    currentSeconds !== null &&
+    nextSeconds !== null &&
+    Math.abs(nextSeconds - currentSeconds) > 45
+  ) {
+    return false;
+  }
+
+  if (/^[一二三四五六七八九十0-9]+[.、]/.test(next.text)) {
+    return false;
+  }
+
+  return true;
+}
+
+export function postProcessTranscriptBlocks(blocks: TranscriptBlock[]) {
+  const cleanedBlocks = blocks
+    .map((block) => ({
+      ...block,
+      speaker: block.speaker.trim(),
+      text: cleanTranscriptBlockText(block.text),
+    }))
+    .filter((block) => block.text.length > 0);
+
+  if (cleanedBlocks.length === 0) {
+    return [];
+  }
+
+  const mergedBlocks: TranscriptBlock[] = [];
+
+  for (const block of cleanedBlocks) {
+    const previous = mergedBlocks.at(-1);
+
+    if (!previous || !shouldMergeBlocks(previous, block)) {
+      mergedBlocks.push({
+        ...block,
+      });
+      continue;
+    }
+
+    previous.text = `${previous.text} ${block.text}`.replace(/\s+/g, " ").trim();
+
+    if (!previous.speaker && block.speaker) {
+      previous.speaker = block.speaker;
+    }
+  }
+
+  return mergedBlocks.map((block, index) => ({
+    id: `t-${String(index + 1).padStart(3, "0")}`,
+    time: block.time,
+    speaker: block.speaker,
+    text: block.text,
+  }));
+}
+
+export function transcriptTextToTranscriptBlocks(text: string): TranscriptBlock[] {
+  const blocks: TranscriptBlock[] = [];
+  const normalizedText = text
+    .replace(/\r\n/g, "\n")
+    .replace(/\[(\d{2}:\d{2}(?::\d{2})?)\]/g, "\n[$1] ")
+    .trim();
+  const segments = normalizedText
+    .split(/\n(?=(?:\[\d{2}:\d{2}(?::\d{2})?\]|\d{2}:\d{2}(?::\d{2})?\s))/)
+    .map((segment) => segment.trim())
+    .filter(Boolean);
+
+  for (const segment of segments) {
+    const match = segment.match(
+      /^(?:\[(\d{2}:\d{2}(?::\d{2})?)\]|(\d{2}:\d{2}(?::\d{2})?))(?:\s+([^\s:：]{1,20})[：:])?\s*([\s\S]+)$/,
+    );
+
+    if (!match) {
+      continue;
+    }
+
+    const timestamp = normalizeTimestamp(match[1] ?? match[2] ?? "");
+    const speaker = (match[3] ?? "").trim();
+    const content = cleanTranscriptLikeText(match[4] ?? "");
+
+    if (!timestamp || !content) {
+      continue;
+    }
+
+    blocks.push({
+      id: `xyy-existing-${blocks.length + 1}`,
+      time: timestamp,
+      speaker,
+      text: content,
+    });
+  }
+
+  if (blocks.length > 0) {
+    return blocks;
+  }
+
+  const fallbackText = cleanTranscriptLikeText(text);
+
+  if (!fallbackText) {
+    return [];
+  }
+
+  const paragraphs = fallbackText
+    .split(/(?<=[。！？!?])\s+/)
+    .map((paragraph) => paragraph.trim())
+    .filter(Boolean);
+
+  return (paragraphs.length > 0 ? paragraphs : [fallbackText]).map(
+    (paragraph, index) => ({
+      id: `xyy-existing-${index + 1}`,
+      time: "00:00",
+      speaker: "",
+      text: paragraph,
+    }),
+  );
 }
 
 export function isTranscriptLongEnough(text: string, durationSeconds?: number) {
