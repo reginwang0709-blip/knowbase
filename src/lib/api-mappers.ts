@@ -20,6 +20,10 @@ type ContentPayload = {
   chapters?: KnowledgeItem["chapters"];
   glossaryTerms?: KnowledgeItem["glossaryTerms"];
   transcriptBlocks?: KnowledgeItem["transcriptBlocks"];
+  sourceMetadata?: {
+    audioUrl?: string;
+    coverUrl?: string;
+  };
 };
 
 type LibraryRows = {
@@ -108,8 +112,8 @@ export function mapContentRowToKnowledgeItem(row: ContentRow): KnowledgeItem {
     sourcePlatform: row.platform,
     sourceUrl: row.source_url,
     author: row.author ?? "",
-    publishedAt: formatDate(row.published_at),
-    parsedAt: formatDateTime(row.parsed_at),
+    publishedAt: row.published_at ?? "",
+    parsedAt: row.parsed_at,
     summary: row.summary,
     keywords: payload.keywords ?? [],
     sections: payload.sections ?? [],
@@ -134,7 +138,7 @@ function toLibraryContentItem({
     id: content.id,
     title: content.title,
     platform: content.platform,
-    author: content.author ?? "",
+    author: content.author ?? "未识别",
     summary: content.summary,
     categoryPath:
       category && topic ? `${category.name} / ${topic.name}` : "未归档",

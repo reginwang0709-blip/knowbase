@@ -14,15 +14,17 @@ const statusSteps = [
   "已完成",
 ];
 
-const defaultUrl = "https://www.xiaoyuzhoufm.com/episode/demo-001";
 const fallbackContentId = "demo-001";
 
 export default function HomePage() {
   const router = useRouter();
-  const [url, setUrl] = useState(defaultUrl);
+  const [url, setUrl] = useState("");
   const [isSubmitted, setIsSubmitted] = useState(false);
   const [stepIndex, setStepIndex] = useState(0);
   const [submittedAt, setSubmittedAt] = useState("");
+  const [submittedUrl, setSubmittedUrl] = useState("");
+  const [taskTitle, setTaskTitle] = useState("等待提交");
+  const [taskPlatform, setTaskPlatform] = useState("待识别");
   const [contentId, setContentId] = useState(fallbackContentId);
   const [isParseRequestDone, setIsParseRequestDone] = useState(false);
   const [isUsingFallback, setIsUsingFallback] = useState(false);
@@ -61,9 +63,16 @@ export default function HomePage() {
   ]);
 
   const progress = Math.round(((stepIndex + 1) / statusSteps.length) * 100);
-  const currentStatus = statusSteps[stepIndex];
+  const currentStatus =
+    isSubmitted && !isParseRequestDone ? "正在生成" : statusSteps[stepIndex];
 
   const startParsing = async () => {
+    const trimmedUrl = url.trim();
+
+    if (!trimmedUrl) {
+      return;
+    }
+
     setSubmittedAt(
       new Intl.DateTimeFormat("zh-CN", {
         month: "2-digit",
@@ -74,17 +83,24 @@ export default function HomePage() {
     );
     setIsSubmitted(true);
     setStepIndex(0);
+    setSubmittedUrl(trimmedUrl);
+    setTaskTitle("等待提交");
+    setTaskPlatform("待识别");
     setContentId(fallbackContentId);
     setIsParseRequestDone(false);
     setIsUsingFallback(false);
     hasNavigatedRef.current = false;
 
     try {
-      const result = await createParseTask(url);
+      const result = await createParseTask(trimmedUrl);
 
       setContentId(result.contentId);
+      setTaskTitle(result.task.title || "未命名内容");
+      setTaskPlatform(result.task.platform || "未识别");
     } catch {
       setContentId(fallbackContentId);
+      setTaskTitle("演示内容");
+      setTaskPlatform("演示内容");
       setIsUsingFallback(true);
     } finally {
       setIsParseRequestDone(true);
@@ -114,11 +130,11 @@ export default function HomePage() {
 
           <div className="mt-8 flex flex-col gap-3 sm:flex-row">
             <input
-              aria-label="小宇宙链接"
+              aria-label="内容链接"
               className="kb-input"
               value={url}
               onChange={(event) => setUrl(event.target.value)}
-              placeholder="粘贴小宇宙、YouTube 或网页链接"
+              placeholder="粘贴文章、播客或视频链接"
               disabled={isSubmitted && !isParseRequestDone}
             />
             <button
@@ -145,6 +161,20 @@ export default function HomePage() {
               <p className="mt-4 leading-7 text-muted">
                 提交链接后，你可以看到来源识别、内容提取、逐字稿生成和知识包整理的完整进度。
               </p>
+              <dl className="mt-6 grid gap-3 text-sm sm:grid-cols-2">
+                <div>
+                  <dt className="text-muted">标题</dt>
+                  <dd className="mt-1 font-medium text-ink">{taskTitle}</dd>
+                </div>
+                <div>
+                  <dt className="text-muted">来源平台</dt>
+                  <dd className="mt-1 font-medium text-ink">{taskPlatform}</dd>
+                </div>
+                <div className="sm:col-span-2">
+                  <dt className="text-muted">链接</dt>
+                  <dd className="mt-1 font-medium text-ink">粘贴链接后开始识别</dd>
+                </div>
+              </dl>
               <p className="mt-3 leading-7 text-muted">
                 生成完成后，可以直接进入知识包或回到知识库继续管理。
               </p>
@@ -155,7 +185,7 @@ export default function HomePage() {
                 <div>
                   <p className="kb-label mb-3">解析任务</p>
                   <h2 className="text-2xl font-semibold leading-snug text-ink">
-                    从个人知识库到行动系统：如何让信息真正复用
+                    {taskTitle}
                   </h2>
                 </div>
                 <span className="rounded-full bg-sage/10 px-3 py-1 text-xs font-semibold text-sage">
@@ -166,11 +196,13 @@ export default function HomePage() {
               <dl className="mt-6 grid gap-4 text-sm sm:grid-cols-2">
                 <div>
                   <dt className="text-muted">链接</dt>
-                  <dd className="mt-1 break-all font-medium text-ink">{url}</dd>
+                  <dd className="mt-1 break-all font-medium text-ink">
+                    {submittedUrl}
+                  </dd>
                 </div>
                 <div>
                   <dt className="text-muted">来源平台</dt>
-                  <dd className="mt-1 font-medium text-ink">小宇宙</dd>
+                  <dd className="mt-1 font-medium text-ink">{taskPlatform}</dd>
                 </div>
                 <div>
                   <dt className="text-muted">提交时间</dt>

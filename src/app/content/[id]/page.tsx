@@ -33,6 +33,13 @@ export default async function ContentPage({ params }: ContentPageProps) {
     notFound();
   }
 
+  const displayItem = {
+    ...item,
+    author: item.author || "未识别",
+    publishedAt: item.publishedAt || "未识别",
+    summary: item.summary || "暂未提取到网页摘要。",
+  };
+
   return (
     <main className="kb-container">
       <nav className="mb-8 flex items-center justify-between">
@@ -44,7 +51,7 @@ export default async function ContentPage({ params }: ContentPageProps) {
         </Link>
       </nav>
 
-      <KnowledgePackClient item={item} />
+      <KnowledgePackClient item={displayItem} />
     </main>
   );
 }

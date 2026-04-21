@@ -16,7 +16,13 @@ export type LibraryData = {
 };
 
 export type CreateParseTaskResult = {
-  task: unknown;
+  task: {
+    id?: string;
+    url?: string;
+    title?: string | null;
+    platform?: string | null;
+    content_id?: string | null;
+  };
   contentId: string;
   duplicated?: boolean;
 };
@@ -82,7 +88,7 @@ export async function createParseTask(
   }
 
   return {
-    task: data.task,
+    task: data.task ?? {},
     contentId: data.contentId,
     duplicated: data.duplicated,
   };
@@ -125,7 +131,24 @@ export async function getKnowledgeItemById(
       return fallbackItem;
     }
 
-    return (await response.json()) as KnowledgeItem;
+    const item = (await response.json()) as Partial<KnowledgeItem>;
+
+    if (
+      typeof item.id !== "string" ||
+      typeof item.title !== "string" ||
+      typeof item.sourcePlatform !== "string" ||
+      typeof item.sourceUrl !== "string" ||
+      typeof item.summary !== "string" ||
+      !Array.isArray(item.keywords) ||
+      !Array.isArray(item.sections) ||
+      !Array.isArray(item.chapters) ||
+      !Array.isArray(item.glossaryTerms) ||
+      !Array.isArray(item.transcriptBlocks)
+    ) {
+      return fallbackItem;
+    }
+
+    return item as KnowledgeItem;
   } catch {
     return fallbackItem;
   }

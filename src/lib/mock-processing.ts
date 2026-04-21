@@ -1,4 +1,9 @@
 import { buildContentPayloadFromMockItem } from "./api-mappers";
+import {
+  platformFromUrl,
+  readableTitleFromUrl,
+  type LinkMetadata,
+} from "./link-metadata";
 import { libraryCategories, mockKnowledgeItems } from "./mock-data";
 import { supabaseAdmin } from "./supabase/admin";
 import type { Database } from "./supabase/types";
@@ -149,30 +154,47 @@ export async function ensureMockLibraryStructure() {
 }
 
 export async function runMockProcessingForTask({
+  metadata,
   taskId,
-  url,
 }: {
+  metadata: LinkMetadata;
   taskId: string;
-  url: string;
 }) {
   const demoItem = mockKnowledgeItems[0];
+  const sourceUrl = metadata.canonicalUrl || metadata.url;
+  const title =
+    metadata.title || readableTitleFromUrl(sourceUrl) || "未命名内容";
+  const platform =
+    metadata.siteName ||
+    metadata.platform ||
+    platformFromUrl(sourceUrl) ||
+    "未知来源";
+  const summary = metadata.description || "暂未提取到网页摘要。";
 
   if (!demoItem) {
     throw new Error("No demo knowledge item is available.");
   }
 
+  const contentPayload = {
+    ...(buildContentPayloadFromMockItem(demoItem) as Record<string, unknown>),
+    sourceMetadata: {
+      audioUrl: metadata.audioUrl,
+      coverUrl: metadata.coverUrl,
+    },
+  };
+
   const { data: content, error: contentError } = await supabaseAdmin
     .from("contents")
     .insert({
       task_id: taskId,
-      title: demoItem.title,
-      platform: demoItem.sourcePlatform,
-      source_url: url,
-      author: demoItem.author,
-      published_at: toIsoDate(demoItem.publishedAt),
+      title,
+      platform,
+      source_url: sourceUrl,
+      author: metadata.author || null,
+      published_at: metadata.publishedAt ?? null,
       parsed_at: new Date().toISOString(),
-      summary: demoItem.summary,
-      content_payload: buildContentPayloadFromMockItem(demoItem),
+      summary,
+      content_payload: contentPayload,
     })
     .select("*")
     .single();
@@ -216,8 +238,8 @@ export async function runMockProcessingForTask({
       status: "completed",
       progress: 100,
       content_id: content.id,
-      title: demoItem.title,
-      platform: demoItem.sourcePlatform,
+      title: content.title,
+      platform: content.platform,
     })
     .eq("id", taskId)
     .select("*")

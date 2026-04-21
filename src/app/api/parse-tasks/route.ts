@@ -1,5 +1,14 @@
 import { NextResponse } from "next/server";
 
+import {
+  authorFromUrl,
+  extractLinkMetadata,
+  isXiaoyuzhouEpisodeUrl,
+  normalizeSubmittedUrl,
+  platformFromUrl,
+  readableTitleFromUrl,
+  type LinkMetadata,
+} from "@/lib/link-metadata";
 import { runMockProcessingForTask } from "@/lib/mock-processing";
 import { supabaseAdmin } from "@/lib/supabase/admin";
 
@@ -25,6 +34,37 @@ async function readUrl(request: Request) {
   return typeof url === "string" ? url.trim() : "";
 }
 
+function buildContentBasics({
+  metadata,
+  normalizedSubmittedUrl,
+}: {
+  metadata: LinkMetadata;
+  normalizedSubmittedUrl: string;
+}) {
+  const sourceUrl = metadata.canonicalUrl || normalizedSubmittedUrl;
+
+  return {
+    title:
+      metadata.title || readableTitleFromUrl(sourceUrl) || "未命名内容",
+    platform:
+      metadata.siteName ||
+      metadata.platform ||
+      platformFromUrl(sourceUrl) ||
+      "未知来源",
+    source_url: sourceUrl,
+    author: metadata.author || authorFromUrl(sourceUrl) || null,
+    published_at: metadata.publishedAt || null,
+    summary: metadata.description || "暂未提取到网页摘要。",
+  };
+}
+
+function buildSourceMetadata(metadata: LinkMetadata) {
+  return {
+    audioUrl: metadata.audioUrl,
+    coverUrl: metadata.coverUrl,
+  };
+}
+
 export async function POST(request: Request) {
   const url = await readUrl(request);
 
@@ -37,10 +77,47 @@ export async function POST(request: Request) {
     );
   }
 
+  let normalizedSubmittedUrl: string;
+
+  try {
+    normalizedSubmittedUrl = normalizeSubmittedUrl(url);
+  } catch {
+    return NextResponse.json(
+      {
+        error: "url is invalid",
+      },
+      { status: 400 },
+    );
+  }
+
+  const metadata = await extractLinkMetadata(normalizedSubmittedUrl);
+  const isXiaoyuzhouEpisode = isXiaoyuzhouEpisodeUrl(normalizedSubmittedUrl);
+
+  if (isXiaoyuzhouEpisode && !metadata.audioUrl) {
+    return NextResponse.json(
+      {
+        error: "未能从小宇宙单集页面提取到可用的音频地址。",
+      },
+      { status: 422 },
+    );
+  }
+
+  const contentBasics = buildContentBasics({
+    metadata,
+    normalizedSubmittedUrl,
+  });
+  const processingMetadata = {
+    ...metadata,
+    url: normalizedSubmittedUrl,
+    canonicalUrl: metadata.canonicalUrl,
+  };
+
   const { data: createdTask, error: createTaskError } = await supabaseAdmin
     .from("parse_tasks")
     .insert({
-      url,
+      url: normalizedSubmittedUrl,
+      title: contentBasics.title,
+      platform: contentBasics.platform,
       status: "submitted",
       progress: 0,
     })
@@ -61,7 +138,7 @@ export async function POST(request: Request) {
       await supabaseAdmin
         .from("contents")
         .select("*")
-        .eq("source_url", url)
+        .eq("source_url", contentBasics.source_url)
         .order("created_at", { ascending: true })
         .limit(1);
 
@@ -72,15 +149,39 @@ export async function POST(request: Request) {
     const matchedContent = existingContent?.[0];
 
     if (matchedContent) {
+      const existingPayload =
+        matchedContent.content_payload &&
+        typeof matchedContent.content_payload === "object" &&
+        !Array.isArray(matchedContent.content_payload)
+          ? matchedContent.content_payload
+          : {};
+      const { data: refreshedContent, error: refreshContentError } =
+        await supabaseAdmin
+          .from("contents")
+          .update({
+            ...contentBasics,
+            content_payload: {
+              ...existingPayload,
+              sourceMetadata: buildSourceMetadata(metadata),
+            },
+          })
+          .eq("id", matchedContent.id)
+          .select("*")
+          .single();
+
+      if (refreshContentError) {
+        throw refreshContentError;
+      }
+
       const { data: completedTask, error: completeTaskError } =
         await supabaseAdmin
           .from("parse_tasks")
           .update({
             status: "completed",
             progress: 100,
-            content_id: matchedContent.id,
-            title: matchedContent.title,
-            platform: matchedContent.platform,
+            content_id: refreshedContent.id,
+            title: refreshedContent.title,
+            platform: refreshedContent.platform,
           })
           .eq("id", createdTask.id)
           .select("*")
@@ -92,20 +193,22 @@ export async function POST(request: Request) {
 
       return NextResponse.json({
         task: completedTask,
-        contentId: matchedContent.id,
+        contentId: refreshedContent.id,
         duplicated: true,
+        sourceMetadata: buildSourceMetadata(metadata),
       });
     }
 
     const { task, content } = await runMockProcessingForTask({
+      metadata: processingMetadata,
       taskId: createdTask.id,
-      url,
     });
 
     return NextResponse.json({
       task,
       contentId: content.id,
       duplicated: false,
+      sourceMetadata: buildSourceMetadata(metadata),
     });
   } catch (error) {
     const errorMessage = getErrorMessage(error);

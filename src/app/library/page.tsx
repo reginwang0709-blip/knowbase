@@ -241,7 +241,10 @@ function MindMapTopicBranch({
 }
 
 export default function LibraryPage() {
-  const [libraryData, setLibraryData] = useState(getFallbackLibraryData);
+  const [libraryData, setLibraryData] = useState<ReturnType<
+    typeof getFallbackLibraryData
+  > | null>(null);
+  const [isLoadingLibrary, setIsLoadingLibrary] = useState(true);
   const [query, setQuery] = useState("");
   const [deleteError, setDeleteError] = useState("");
   const [deletingContentId, setDeletingContentId] = useState("");
@@ -257,16 +260,26 @@ export default function LibraryPage() {
     categoryId: string;
     keyword: string;
   } | null>(null);
-  const [selectedCategoryId, setSelectedCategoryId] = useState(
-    () => libraryData.libraryCategories[0]?.id ?? "",
-  );
+  const [selectedCategoryId, setSelectedCategoryId] = useState("");
   const detailRef = useRef<HTMLElement | null>(null);
-  const { libraryCategories, recentContents, recentTopics } = libraryData;
+  const libraryCategories = useMemo(
+    () => libraryData?.libraryCategories ?? [],
+    [libraryData],
+  );
+  const recentContents = useMemo(
+    () => libraryData?.recentContents ?? [],
+    [libraryData],
+  );
+  const recentTopics = useMemo(
+    () => libraryData?.recentTopics ?? [],
+    [libraryData],
+  );
 
   const refreshLibraryData = async () => {
     const data = await getLibraryData();
 
     setLibraryData(data);
+    setIsLoadingLibrary(false);
   };
 
   useEffect(() => {
@@ -275,6 +288,7 @@ export default function LibraryPage() {
     getLibraryData().then((data) => {
       if (isMounted) {
         setLibraryData(data);
+        setIsLoadingLibrary(false);
         setDeleteError("");
       }
     });
@@ -324,6 +338,27 @@ export default function LibraryPage() {
     null;
 
   const showClearFilter = Boolean(activeTopic || normalizedQuery);
+
+  if (isLoadingLibrary) {
+    return (
+      <main className="kb-container">
+        <nav className="mb-8 flex items-center justify-between">
+          <Link href="/" className="text-xl font-bold text-ink">
+            KnowBase
+          </Link>
+          <Link href="/" className="kb-button-secondary">
+            新建解析
+          </Link>
+        </nav>
+        <div className="flex min-h-[55vh] items-center justify-center">
+          <div className="flex items-center gap-3 text-sm font-medium text-muted">
+            <span className="h-5 w-5 rounded-full border-2 border-sage/20 border-t-sage motion-safe:animate-spin" />
+            <span>正在加载知识库…</span>
+          </div>
+        </div>
+      </main>
+    );
+  }
 
   const selectCategory = (categoryId: string) => {
     setSelectedCategoryId(categoryId);
