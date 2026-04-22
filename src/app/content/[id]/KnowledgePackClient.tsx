@@ -1,7 +1,12 @@
 "use client";
 
 import { Fragment, useMemo, useState } from "react";
-import type { GlossaryTerm, KnowledgeItem, Section } from "@/lib/mock-data";
+import type {
+  GlossaryTerm,
+  KnowledgeItem,
+  Section,
+  TranscriptBlock,
+} from "@/lib/mock-data";
 import type { ReactNode } from "react";
 
 type KnowledgePackClientProps = {
@@ -11,6 +16,11 @@ type KnowledgePackClientProps = {
 type GlossaryToken = {
   term: GlossaryTerm;
   token: string;
+};
+
+type SectionTranscriptGroup = {
+  section: Section;
+  blocks: TranscriptBlock[];
 };
 
 const highlightDuration = 2600;
@@ -39,6 +49,118 @@ function buildGlossaryTokens(glossaryTerms: GlossaryTerm[]) {
   });
 
   return tokens.sort((first, second) => second.token.length - first.token.length);
+}
+
+function timestampToSeconds(value?: string) {
+  if (!value) {
+    return null;
+  }
+
+  const parts = value
+    .split(":")
+    .map((part) => Number(part.trim()))
+    .filter((part) => !Number.isNaN(part));
+
+  if (parts.length === 2) {
+    return parts[0] * 60 + parts[1];
+  }
+
+  if (parts.length === 3) {
+    return parts[0] * 3600 + parts[1] * 60 + parts[2];
+  }
+
+  return null;
+}
+
+function buildBlockIndexMap(blocks: TranscriptBlock[]) {
+  return new Map(blocks.map((block, index) => [block.id, index]));
+}
+
+function getBlockIndex(
+  blockIndexMap: Map<string, number>,
+  blockId?: string,
+) {
+  return blockId ? blockIndexMap.get(blockId) ?? null : null;
+}
+
+function createSectionAnchorId(sectionId: string) {
+  return `section-${sectionId}`;
+}
+
+function formatSectionRange(section: Section) {
+  if (section.startTimestamp && section.endTimestamp) {
+    return `${section.startTimestamp} - ${section.endTimestamp}`;
+  }
+
+  return section.startTimestamp || section.endTimestamp || "章节";
+}
+
+function shouldShowSectionSummary(section: Section) {
+  const title = section.title.trim();
+  const summary = section.summary.trim();
+
+  return Boolean(summary && summary !== title);
+}
+
+function groupTranscriptBlocksBySections(
+  sections: Section[],
+  transcriptBlocks: TranscriptBlock[],
+) {
+  if (sections.length === 0) {
+    return [] as SectionTranscriptGroup[];
+  }
+
+  const blockIndexMap = buildBlockIndexMap(transcriptBlocks);
+
+  return sections.map((section, index) => {
+    const nextSection = sections[index + 1];
+    const currentStart = timestampToSeconds(section.startTimestamp);
+    const currentEnd = timestampToSeconds(section.endTimestamp);
+    const nextStart = timestampToSeconds(nextSection?.startTimestamp);
+    const startBlockIndex =
+      getBlockIndex(blockIndexMap, section.startBlockId) ??
+      getBlockIndex(blockIndexMap, section.endBlockId);
+    const endBlockIndex =
+      getBlockIndex(blockIndexMap, section.endBlockId) ??
+      getBlockIndex(blockIndexMap, nextSection?.startBlockId);
+
+    const blocks = transcriptBlocks.filter((block, blockIndex) => {
+      const blockSeconds = timestampToSeconds(block.time);
+
+      if (blockSeconds !== null) {
+        if (index === 0 && nextStart !== null) {
+          return blockSeconds < nextStart;
+        }
+
+        if (currentStart !== null && currentEnd !== null) {
+          return blockSeconds >= currentStart && blockSeconds < currentEnd;
+        }
+
+        if (currentStart !== null && nextStart !== null) {
+          return blockSeconds >= currentStart && blockSeconds < nextStart;
+        }
+
+        if (currentStart !== null) {
+          return blockSeconds >= currentStart;
+        }
+      }
+
+      if (startBlockIndex === null) {
+        return false;
+      }
+
+      if (endBlockIndex !== null) {
+        return blockIndex >= startBlockIndex && blockIndex < endBlockIndex;
+      }
+
+      return blockIndex >= startBlockIndex;
+    });
+
+    return {
+      section,
+      blocks,
+    };
+  });
 }
 
 function GlossaryMarker({
@@ -174,6 +296,17 @@ export default function KnowledgePackClient({ item }: KnowledgePackClientProps) 
     () => buildGlossaryTokens(item.glossaryTerms),
     [item.glossaryTerms],
   );
+  const sectionGroups = useMemo(
+    () => groupTranscriptBlocksBySections(sections, item.transcriptBlocks),
+    [item.transcriptBlocks, sections],
+  );
+  const blockSectionMap = useMemo(() => {
+    const entries = sectionGroups.flatMap(({ section, blocks }) =>
+      blocks.map((block) => [block.id, section] as const),
+    );
+
+    return new Map(entries);
+  }, [sectionGroups]);
 
   const clearHighlightLater = () => {
     window.setTimeout(() => {
@@ -197,8 +330,11 @@ export default function KnowledgePackClient({ item }: KnowledgePackClientProps) 
     setActiveNavId("content-transcript");
     setActiveSectionId(section.id);
     setHighlightedBlockId(section.startBlockId);
-    scrollToElement(section.startBlockId);
-    clearHighlightLater();
+    scrollToElement(createSectionAnchorId(section.id));
+
+    if (section.startBlockId) {
+      clearHighlightLater();
+    }
   };
 
   const jumpToTranscript = (blockId: string, sectionId?: string) => {
@@ -212,6 +348,7 @@ export default function KnowledgePackClient({ item }: KnowledgePackClientProps) 
   };
 
   const findSectionByBlockId = (blockId: string) =>
+    blockSectionMap.get(blockId) ??
     sections.find((section) =>
       [
         section.startBlockId,
@@ -255,7 +392,8 @@ export default function KnowledgePackClient({ item }: KnowledgePackClientProps) 
             );
           })}
         </nav>
-        <div className="mt-2 grid gap-1 border-l border-line pl-3">
+        <div className="mt-3 max-h-[calc(100vh-260px)] overflow-y-auto pr-1">
+          <div className="grid gap-1 border-l border-line pl-3">
           {sections.map((section) => {
             const isActive = section.id === activeSectionId;
 
@@ -274,12 +412,13 @@ export default function KnowledgePackClient({ item }: KnowledgePackClientProps) 
                   {section.startTimestamp}
                   {section.endTimestamp ? ` - ${section.endTimestamp}` : ""}
                 </span>
-                <span className="mt-1 block text-sm font-medium">
+                <span className="mt-1 line-clamp-2 block text-sm font-medium leading-5">
                   {section.title}
                 </span>
               </button>
             );
           })}
+          </div>
         </div>
       </aside>
 
@@ -356,7 +495,7 @@ export default function KnowledgePackClient({ item }: KnowledgePackClientProps) 
                   {section.startTimestamp}
                   {section.endTimestamp ? ` - ${section.endTimestamp}` : ""}
                 </span>
-                <span className="mt-1 block text-sm font-semibold text-ink">
+                <span className="mt-1 line-clamp-2 block text-sm font-semibold leading-5 text-ink">
                   {section.title}
                 </span>
               </button>
@@ -403,59 +542,95 @@ export default function KnowledgePackClient({ item }: KnowledgePackClientProps) 
         <section className="kb-card scroll-mt-6 p-6" id="content-transcript">
           <p className="kb-label mb-4">逐字稿 / 文章</p>
           <div className="grid gap-3">
-            {item.transcriptBlocks.map((block) => {
-              const isHighlighted = highlightedBlockId === block.id;
-              const relatedSection = findSectionByBlockId(block.id);
-              const isSectionStart = relatedSection?.startBlockId === block.id;
-
-              return (
-                <Fragment key={block.id}>
-                  {isSectionStart ? (
-                    <div
-                      className="scroll-mt-6 border-l-4 border-sage bg-sage/5 p-4"
-                      id={relatedSection.id}
-                    >
+            {sectionGroups.length > 0
+              ? sectionGroups.map(({ section, blocks }) => (
+                  <div
+                    className="grid gap-3"
+                    id={createSectionAnchorId(section.id)}
+                    key={section.id}
+                  >
+                    <div className="scroll-mt-6 border-l-4 border-sage bg-sage/5 p-4">
                       <div className="mb-1 text-xs font-semibold text-sage">
-                        {relatedSection.startTimestamp}
-                        {relatedSection.endTimestamp
-                          ? ` - ${relatedSection.endTimestamp}`
-                          : ""}
+                        {formatSectionRange(section)}
                       </div>
-                      <h2 className="font-semibold text-ink">
-                        {relatedSection.title}
-                      </h2>
-                      <p className="mt-2 text-sm italic leading-6 text-muted">
-                        {relatedSection.summary}
+                      <h2 className="font-semibold text-ink">{section.title}</h2>
+                      {shouldShowSectionSummary(section) ? (
+                        <p className="mt-2 text-sm italic leading-6 text-muted">
+                          {section.summary}
+                        </p>
+                      ) : (
+                        <p className="mt-2 text-sm italic leading-6 text-muted">
+                          暂无章节摘要
+                        </p>
+                      )}
+                    </div>
+
+                    {blocks.map((block) => {
+                      const isHighlighted = highlightedBlockId === block.id;
+
+                      return (
+                        <div
+                          className={`scroll-mt-6 rounded-lg border p-4 transition ${
+                            isHighlighted
+                              ? "border-sage bg-sage/10"
+                              : "border-line bg-white"
+                          }`}
+                          id={block.id}
+                          key={block.id}
+                        >
+                          <div className="mb-2 flex flex-wrap items-center gap-3 text-xs">
+                            <span className="font-semibold text-sage">
+                              {block.time}
+                            </span>
+                            {block.speaker ? (
+                              <span className="rounded-full bg-panel px-3 py-1 text-muted">
+                                {block.speaker}
+                              </span>
+                            ) : null}
+                          </div>
+                          <p className="text-sm leading-7 text-ink">
+                            {renderMarkedText({
+                              text: block.text,
+                              glossaryTokens,
+                              onLocate: locateGlossaryTerm,
+                            })}
+                          </p>
+                        </div>
+                      );
+                    })}
+                  </div>
+                ))
+              : item.transcriptBlocks.map((block) => {
+                  const isHighlighted = highlightedBlockId === block.id;
+
+                  return (
+                    <div
+                      className={`scroll-mt-6 rounded-lg border p-4 transition ${
+                        isHighlighted
+                          ? "border-sage bg-sage/10"
+                          : "border-line bg-white"
+                      }`}
+                      id={block.id}
+                      key={block.id}
+                    >
+                      <div className="mb-2 flex flex-wrap items-center gap-3 text-xs">
+                        <span className="font-semibold text-sage">{block.time}</span>
+                        {block.speaker ? (
+                          <span className="rounded-full bg-panel px-3 py-1 text-muted">
+                            {block.speaker}
+                          </span>
+                        ) : null}
+                      </div>
+                      <p className="text-sm leading-7 text-ink">
+                        {renderMarkedText({
+                          text: block.text,
+                          glossaryTokens,
+                          onLocate: locateGlossaryTerm,
+                        })}
                       </p>
                     </div>
-                  ) : null}
-                <div
-                  className={`scroll-mt-6 rounded-lg border p-4 transition ${
-                    isHighlighted
-                      ? "border-sage bg-sage/10"
-                      : "border-line bg-white"
-                  }`}
-                  id={block.id}
-                >
-                  <div className="mb-2 flex flex-wrap items-center gap-3 text-xs">
-                    <span className="font-semibold text-sage">{block.time}</span>
-                    {block.speaker ? (
-                      <span className="rounded-full bg-panel px-3 py-1 text-muted">
-                        {block.speaker}
-                      </span>
-                    ) : null}
-                  </div>
-                  <p className="text-sm leading-7 text-ink">
-                    {renderMarkedText({
-                      text: block.text,
-                      glossaryTokens,
-                      onLocate: locateGlossaryTerm,
-                    })}
-                  </p>
-                </div>
-                </Fragment>
-              );
-            })}
+                  );
+                })}
           </div>
         </section>
       </div>

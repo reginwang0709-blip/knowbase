@@ -35,9 +35,106 @@ export type TranscriptSourceDecision = {
 
 type TimestampSectionSeed = {
   title: string;
+  summary: string;
   startTimestamp: string;
   order: number;
 };
+
+type ShownotesSectionsDecision = {
+  source: "shownotes" | "llm_fallback_required";
+  reason?: string;
+  sections: Section[];
+};
+
+const TIMELINE_START_MARKERS = [
+  "时间线",
+  "时间轴",
+  "本期时间线",
+  "本期目录",
+  "时间戳",
+  "Shownotes",
+  "Show notes",
+  "Timeline",
+  "Chapters",
+  "Timestamps",
+];
+
+const NON_TIMELINE_SECTION_MARKERS = [
+  "剪辑",
+  "后期",
+  "主播",
+  "嘉宾",
+  "制作",
+  "出品",
+  "Staff",
+  "Credits",
+  "Production",
+  "相关链接",
+  "参考链接",
+  "延伸阅读",
+  "资料链接",
+  "References",
+  "Links",
+  "Resources",
+  "欢迎",
+  "评论区",
+  "公众号",
+  "听友群",
+  "加入群",
+  "社群",
+  "订阅",
+  "收听",
+  "关注我们",
+  "商务合作",
+  "赞助",
+  "Support",
+  "Subscribe",
+  "Follow us",
+  "Apple Podcast",
+  "Spotify",
+  "小宇宙",
+  "喜马拉雅",
+  "YouTube",
+  "B站",
+  "声明",
+];
+
+const TITLE_STOP_MARKERS = [
+  "剪辑：",
+  "剪辑:",
+  "后期：",
+  "后期:",
+  "制作：",
+  "制作:",
+  "出品：",
+  "出品:",
+  "相关链接",
+  "参考链接",
+  "延伸阅读",
+  "资料链接",
+  "References",
+  "Links",
+  "Resources",
+  "欢迎",
+  "评论区",
+  "公众号",
+  "听友群",
+  "加入群",
+  "社群",
+  "订阅",
+  "收听",
+  "关注我们",
+  "商务合作",
+  "Support",
+  "Subscribe",
+  "Follow us",
+  "Apple Podcast",
+  "Spotify",
+  "小宇宙",
+  "喜马拉雅",
+  "YouTube",
+  "B站",
+];
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
@@ -175,12 +272,241 @@ function normalizeSpeakerLabel(speaker: string) {
   return trimmed;
 }
 
-function cleanSectionTitle(value: string) {
+function cleanSectionDelimiterText(value: string) {
   return value
     .replace(/^[\-\-—–:：·•\s]+/, "")
     .replace(/[\-\-—–:：·•\s]+$/, "")
     .replace(/\s+/g, " ")
     .trim();
+}
+
+function buildMarkerRegex(markers: string[]) {
+  return new RegExp(`(?:${markers.map((marker) => marker.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|")})`, "i");
+}
+
+function findTimelineStartIndex(text: string) {
+  const patterns = [
+    /(?:^|[\n\s])(?:本期时间线|本期目录|时间线|时间轴|时间戳)\s*[:：]/i,
+    /(?:^|[\n\s])(?:Shownotes|Show notes|Timeline|Chapters|Timestamps)\s*[:：]/i,
+    /(?:^|\n)\s*(?:本期时间线|本期目录|时间线|时间轴|时间戳|Shownotes|Show notes|Timeline|Chapters|Timestamps)\b/i,
+  ];
+
+  for (const pattern of patterns) {
+    const match = pattern.exec(text);
+
+    if (match && typeof match.index === "number") {
+      return match.index + match[0].length;
+    }
+  }
+
+  return -1;
+}
+
+function buildTimestampLineRegex() {
+  return /^\s*(?:\[(\d{2}:\d{2}(?::\d{2})?)\]|(\d{2}:\d{2}(?::\d{2})?))(?:\s*[-—–:：｜|]\s*|\s+)(.+?)\s*$/;
+}
+
+function isHighConfidenceTimestampLine(line: string) {
+  const pattern = buildTimestampLineRegex();
+
+  if (pattern.test(line.trim())) {
+    return true;
+  }
+
+  return /\b\d{2}:\d{2}(?::\d{2})?(?:\s*[-—–:：｜|]\s*|\s+)\S+/.test(line.trim());
+}
+
+function findFirstHighConfidenceTimestampLineIndex(lines: string[]) {
+  return lines.findIndex((line) => isHighConfidenceTimestampLine(line));
+}
+
+export function extractTimelineRegionFromShownotes(text: string) {
+  const normalized = stripHtml(text).replace(/\r\n/g, "\n");
+  const stopRegex = buildMarkerRegex(NON_TIMELINE_SECTION_MARKERS);
+  const startIndex = findTimelineStartIndex(normalized);
+  const lines = normalized.split("\n");
+  const fallbackStartLineIndex = findFirstHighConfidenceTimestampLineIndex(lines);
+
+  let focused =
+    startIndex >= 0
+      ? normalized.slice(startIndex)
+      : fallbackStartLineIndex >= 0
+        ? lines.slice(fallbackStartLineIndex).join("\n")
+        : normalized;
+
+  if (!focused.trim()) {
+    return normalized;
+  }
+
+  focused = focused.replace(/^[\s:：\-—–|｜]+/, "");
+  const focusedLines = focused.split("\n");
+  const keptLines: string[] = [];
+  const timestampPattern = buildTimestampLineRegex();
+
+  for (const rawLine of focusedLines) {
+    const line = rawLine.trim();
+
+    if (!line) {
+      continue;
+    }
+
+    const hasTimestamp = timestampPattern.test(line) || isHighConfidenceTimestampLine(line);
+    const stopMatch = stopRegex.exec(line);
+
+    if (stopMatch && !hasTimestamp) {
+      break;
+    }
+
+    keptLines.push(line);
+  }
+
+  const keptText = keptLines.join("\n").trim();
+
+  if (keptText) {
+    return keptText;
+  }
+
+  const stopMatch = stopRegex.exec(focused);
+
+  if (stopMatch && stopMatch.index > 0) {
+    return focused.slice(0, stopMatch.index).trim() || normalized;
+  }
+
+  return focused.trim() || normalized;
+}
+
+function trimAtOperationalMarkers(value: string) {
+  let result = value;
+
+  for (const marker of TITLE_STOP_MARKERS) {
+    const index = result.indexOf(marker);
+
+    if (index > 0) {
+      result = result.slice(0, index);
+    }
+  }
+
+  return result.trim();
+}
+
+function stripObviousNonTitleContent(value: string) {
+  return trimAtOperationalMarkers(
+    value
+      .replace(/https?:\/\/\S+/gi, " ")
+      .replace(/\bwww\.\S+/gi, " ")
+      .replace(/\S+@\S+\.\S+/g, " ")
+      .replace(/#[^\s#]+/g, " ")
+      .replace(/@[\p{L}\p{N}_-]+/gu, " ")
+      .replace(/[【】[\]]/g, " ")
+      .replace(/\s+/g, " ")
+      .trim(),
+  );
+}
+
+export function cleanSectionTitle(rawTitle: string) {
+  const cleaned = stripObviousNonTitleContent(rawTitle)
+    .replace(/^\d{2}:\d{2}(?::\d{2})?\s*/, "")
+    .replace(/^[[\]()（）]+/, "");
+  const normalized = cleanSectionDelimiterText(cleaned);
+  const firstSentenceMatch = normalized.match(/^(.{12,}?[。.!！?？])/);
+  const firstSentence = firstSentenceMatch?.[1]?.trim() || normalized;
+
+  return truncateSectionTitle(cleanSectionDelimiterText(firstSentence), 42);
+}
+
+export function cleanSectionSummary(rawText: string, title: string) {
+  const cleaned = stripObviousNonTitleContent(rawText);
+  const firstSentenceMatch = cleaned.match(/^(.{12,}?[。.!！?？])/);
+  const sentenceLimited = firstSentenceMatch?.[1]?.trim() || cleaned;
+  const normalized = cleanSectionDelimiterText(sentenceLimited);
+
+  if (!normalized) {
+    return title;
+  }
+
+  if (normalized.length <= 120) {
+    return normalized;
+  }
+
+  return truncateText(normalized, 120);
+}
+
+function isHighlyRepeatedTitle(title: string, previousTitle?: string) {
+  if (!previousTitle) {
+    return false;
+  }
+
+  const normalized = title.replace(/\s+/g, "");
+  const previous = previousTitle.replace(/\s+/g, "");
+
+  return normalized === previous || normalized.includes(previous) || previous.includes(normalized);
+}
+
+function cleanSectionDescription(value: string) {
+  const withoutMarkers = trimAtOperationalMarkers(
+    value
+      .replace(/\s+/g, " ")
+      .replace(/https?:\/\/\S+/gi, " ")
+      .replace(/[【】[\]]/g, " ")
+      .trim(),
+  );
+  const firstSentenceMatch = withoutMarkers.match(/^(.{12,}?[。.!！?？])/);
+  const sentenceLimited = firstSentenceMatch?.[1]?.trim() || withoutMarkers;
+
+  return cleanSectionDelimiterText(sentenceLimited);
+}
+
+function truncateSectionTitle(value: string, maxLength = 42) {
+  if (value.length <= maxLength) {
+    return value;
+  }
+
+  const separators = ["，", "。", ";", "；", "｜", "|", "-", "—", "–"];
+
+  for (const separator of separators) {
+    const index = value.indexOf(separator);
+
+    if (index >= 12 && index <= maxLength) {
+      return value.slice(0, index).trim();
+    }
+  }
+
+  return `${value.slice(0, maxLength).trimEnd()}…`;
+}
+
+function isOperationalOnlyTitle(title: string) {
+  const normalized = title.replace(/\s+/g, "");
+
+  if (!normalized || normalized.length < 2) {
+    return true;
+  }
+
+  if (/^(剪辑|主播|嘉宾|制作|相关链接|参考链接|延伸阅读|欢迎|评论区|公众号|听友群|加入群|订阅|收听|商务合作|声明)/.test(normalized)) {
+    return true;
+  }
+
+  if (/^(https?:\/\/|www\.|\S+@\S+\.\S+)/i.test(normalized)) {
+    return true;
+  }
+
+  const linkLikeChars = (title.match(/[/:.?=&%@#]/g) ?? []).length;
+
+  return linkLikeChars > Math.max(4, Math.floor(title.length / 4));
+}
+
+function cleanTimestampSectionEntry(value: string, previousTitle?: string) {
+  const rawDescription = cleanSectionDescription(value);
+  const title = cleanSectionTitle(rawDescription);
+  const summary = cleanSectionSummary(rawDescription, title);
+
+  if (isOperationalOnlyTitle(title) || isHighlyRepeatedTitle(title, previousTitle)) {
+    return null;
+  }
+
+  return {
+    title,
+    summary,
+  };
 }
 
 function isLikelyFillerOnly(text: string) {
@@ -203,12 +529,8 @@ function cleanTranscriptBlockText(text: string) {
   return isLikelyFillerOnly(cleaned) ? "" : cleaned;
 }
 
-function buildTimestampLineRegex() {
-  return /^\s*(?:\[(\d{2}:\d{2}(?::\d{2})?)\]|(\d{2}:\d{2}(?::\d{2})?))(?:\s*[-—–:：]\s*|\s+)(.+?)\s*$/;
-}
-
 export function extractTimestampSectionsFromText(text: string): TimestampSectionSeed[] {
-  const sourceText = stripHtml(text).replace(/\r\n/g, "\n");
+  const sourceText = extractTimelineRegionFromShownotes(text).replace(/\r\n/g, "\n");
   const lines = sourceText
     .split("\n")
     .map((line) => line.trim())
@@ -224,14 +546,18 @@ export function extractTimestampSectionsFromText(text: string): TimestampSection
     }
 
     const startTimestamp = normalizeTimestamp(match[1] ?? match[2] ?? "");
-    const title = cleanSectionTitle(match[3] ?? "");
+    const cleanedEntry = cleanTimestampSectionEntry(
+      match[3] ?? "",
+      matches.at(-1)?.title,
+    );
 
-    if (!startTimestamp || !title) {
+    if (!startTimestamp || !cleanedEntry) {
       continue;
     }
 
     matches.push({
-      title,
+      title: cleanedEntry.title,
+      summary: cleanedEntry.summary,
       startTimestamp,
       order: matches.length + 1,
     });
@@ -251,20 +577,118 @@ export function extractTimestampSectionsFromText(text: string): TimestampSection
 
   for (const match of inlineSource.matchAll(inlinePattern)) {
     const startTimestamp = normalizeTimestamp(match[1] ?? match[2] ?? "");
-    const title = cleanSectionTitle(match[3] ?? "");
+    const cleanedEntry = cleanTimestampSectionEntry(
+      match[3] ?? "",
+      inlineMatches.at(-1)?.title,
+    );
 
-    if (!startTimestamp || !title) {
+    if (!startTimestamp || !cleanedEntry) {
       continue;
     }
 
     inlineMatches.push({
-      title,
+      title: cleanedEntry.title,
+      summary: cleanedEntry.summary,
       startTimestamp,
       order: inlineMatches.length + 1,
     });
   }
 
   return inlineMatches.length >= 3 ? inlineMatches : [];
+}
+
+export function isUsableShownotesSections(sections: Section[]) {
+  if (sections.length < 3) {
+    return false;
+  }
+
+  const titles = sections.map((section) => section.title.trim()).filter(Boolean);
+
+  if (titles.length < 3) {
+    return false;
+  }
+
+  const withTimestampCount = sections.filter((section) => Boolean(section.startTimestamp)).length;
+  const averageTitleLength =
+    titles.reduce((sum, title) => sum + title.length, 0) / titles.length;
+  const operationalTitleCount = titles.filter((title) => isOperationalOnlyTitle(title)).length;
+  const noisyTitleCount = titles.filter(
+    (title) =>
+      /https?:\/\/|www\.|\S+@\S+\.\S+|公众号|听友群|欢迎|评论区|订阅|收听/i.test(title) ||
+      title.length > 48,
+  ).length;
+
+  if (withTimestampCount < Math.max(3, Math.floor(sections.length * 0.7))) {
+    return false;
+  }
+
+  if (averageTitleLength > 34) {
+    return false;
+  }
+
+  if (operationalTitleCount > 0) {
+    return false;
+  }
+
+  if (noisyTitleCount > Math.floor(sections.length / 4)) {
+    return false;
+  }
+
+  return true;
+}
+
+export function getShownotesSectionsDecision(
+  text: string,
+  transcriptBlocks: TranscriptBlock[],
+): ShownotesSectionsDecision {
+  const sectionSeeds = extractTimestampSectionsFromText(text);
+
+  if (sectionSeeds.length === 0) {
+    return {
+      source: "llm_fallback_required",
+      reason: "shownotes_sections_empty",
+      sections: [],
+    };
+  }
+
+  const sections = sectionSeeds.map((section, index) => {
+    const nextSection = sectionSeeds[index + 1];
+    const startBlockId = findClosestBlockIdByTimestamp(
+      transcriptBlocks,
+      section.startTimestamp,
+      index,
+    );
+    const endBlockId =
+      findClosestBlockIdByTimestamp(
+        transcriptBlocks,
+        nextSection?.startTimestamp,
+        Math.min(index + 1, transcriptBlocks.length - 1),
+      ) || undefined;
+
+    return {
+      id: `section-${String(index + 1).padStart(3, "0")}`,
+      title: section.title,
+      summary: section.summary || section.title,
+      order: index + 1,
+      startBlockId,
+      endBlockId,
+      startTimestamp: section.startTimestamp,
+      endTimestamp: nextSection?.startTimestamp,
+    };
+  });
+
+  if (!isUsableShownotesSections(sections)) {
+    return {
+      source: "llm_fallback_required",
+      reason: "shownotes_sections_unusable",
+      sections,
+    };
+  }
+
+  return {
+    source: "shownotes",
+    sections,
+  };
 }
 
 function findClosestBlockIdByTimestamp(
@@ -307,37 +731,13 @@ export function buildSectionsFromTimestampDirectory(
   text: string,
   transcriptBlocks: TranscriptBlock[],
 ): Section[] {
-  const sectionSeeds = extractTimestampSectionsFromText(text);
+  const decision = getShownotesSectionsDecision(text, transcriptBlocks);
 
-  if (sectionSeeds.length === 0) {
+  if (decision.source !== "shownotes") {
     return [];
   }
 
-  return sectionSeeds.map((section, index) => {
-    const nextSection = sectionSeeds[index + 1];
-    const startBlockId = findClosestBlockIdByTimestamp(
-      transcriptBlocks,
-      section.startTimestamp,
-      index,
-    );
-    const endBlockId =
-      findClosestBlockIdByTimestamp(
-        transcriptBlocks,
-        nextSection?.startTimestamp,
-        Math.min(index + 1, transcriptBlocks.length - 1),
-      ) || undefined;
-
-    return {
-      id: `section-${String(index + 1).padStart(3, "0")}`,
-      title: section.title,
-      summary: section.title,
-      order: index + 1,
-      startBlockId,
-      endBlockId,
-      startTimestamp: section.startTimestamp,
-      endTimestamp: nextSection?.startTimestamp,
-    };
-  });
+  return decision.sections;
 }
 
 function shouldMergeBlocks(current: TranscriptBlock, next: TranscriptBlock) {

@@ -30,6 +30,19 @@ export type GeneratedSummaryKeywords = SummaryKeywordsResult & {
   sampledTranscriptChars: number;
 };
 
+// Step 2 sections 未来如果接入 LLM，应优先复用 shownotes 解析出的
+// section title / timestamps，只让模型在需要时补充信息型 section summary。
+// 当前 Phase 3G-1 不会实际调用这套 prompt。
+export const FUTURE_SECTION_SUMMARY_REQUIREMENTS = [
+  "section summary 不是短标题改写。",
+  "每条 summary 建议 120-180 字，信息复杂章节可放宽到 220 字。",
+  "summary 必须包含具体对象、关键观点和 2-3 个信息点。",
+  "如果原文存在因果、对比、趋势，应尽量保留。",
+  "不要写成“本节主要讲了……”这类模板句。",
+  "不要空泛概括，不要标签堆叠，不要编造 transcript 中没有的信息。",
+  "不要输出 Markdown。",
+].join(" ");
+
 const MAX_BLOCKS = 40;
 const MIN_BLOCKS = 20;
 const MAX_TRANSCRIPT_CHARS = 5000;

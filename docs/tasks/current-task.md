@@ -17,7 +17,7 @@ glossaryTerms 留到后续单独阶段。
 
 ## Step 2 Sections 优先级
 
-Step 2 默认不调用 LLM。
+Step 2 采用 `shownotes-first, LLM fallback`，默认不调用 LLM。
 
 优先级规则：
 
@@ -33,7 +33,45 @@ Step 2 默认不调用 LLM。
    * 或规则解析出的 sections 为空
    * 或 sections 明显质量过低
 
-本阶段只需要明确这个优先级，不实现 Step 2 LLM。
+本阶段先完善 shownotes 解析和质量判断：
+
+* 先定位时间线区域，而不是全篇乱扫
+* 遇到制作信息、链接信息、社群引导、结尾宣传等非时间线区域时停止解析
+* `section.title` 只保留短标题
+* `section.summary` 使用清洗后的较短说明
+* 通过可用性判断后直接使用 shownotes sections
+
+如果 shownotes sections 不可用：
+
+* 只返回或预留 “需要 LLM fallback” 的内部状态
+* 本阶段不调用 Step 2 LLM
+
+Step 3 glossaryTerms 在 Step 2 稳定后再做。
+
+## Step 2 后续 LLM 的定位
+
+如果后续引入 Step 2 LLM，更合理的职责不是默认从零生成章节，而是：
+
+* `section.title / startTimestamp / endTimestamp` 优先来自 shownotes
+* LLM 只在需要时生成或补全 `section.summary`
+* 只有完全没有可用 shownotes sections 时，才考虑让 LLM fallback 生成 sections
+
+## 未来 LLM Section Summary 质量要求
+
+后续如果需要让 LLM 生成 `section.summary`，summary 不能只是短标题改写。
+
+质量要求：
+
+* 每条 summary 建议 `120–180` 字
+* 信息复杂章节可放宽到 `220` 字
+* 必须尽量包含具体对象、关键观点和 `2–3` 个信息点
+* 如果原文有因果、对比、趋势，也要写出来
+* 不要只重复 title
+* 不要写成“本节主要讲了……”这种模板句
+* 不要空泛概括
+* 不要标签堆叠
+* 不要编造 transcript 中没有的信息
+* 不要输出 Markdown
 
 ## 设计原因
 
