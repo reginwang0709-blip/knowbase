@@ -79,6 +79,24 @@ function isKeywordArray(value: unknown): value is Keyword[] {
   return Array.isArray(value);
 }
 
+function resolveContentSummary(payload: ContentPayload, row: ContentRow) {
+  const generatedSummary =
+    typeof payload.generatedSummary === "string"
+      ? payload.generatedSummary.trim()
+      : "";
+  const rowSummary = row.summary?.trim() ?? "";
+
+  return generatedSummary || rowSummary || "暂未提取到内容摘要。";
+}
+
+function resolveContentKeywords(payload: ContentPayload) {
+  if (isKeywordArray(payload.keywords) && payload.keywords.length > 0) {
+    return payload.keywords;
+  }
+
+  return [] as KnowledgeItem["keywords"];
+}
+
 function hasResolvedTranscript(row: ContentRow) {
   const payload = toPayload(row.content_payload);
   const transcriptBlocks = Array.isArray(payload.transcriptBlocks)
@@ -172,8 +190,8 @@ export function mapContentRowToKnowledgeItem(row: ContentRow): KnowledgeItem {
     author: row.author ?? "",
     publishedAt: row.published_at ?? "",
     parsedAt: row.parsed_at,
-    summary: row.summary,
-    keywords: payload.keywords ?? [],
+    summary: resolveContentSummary(payload, row),
+    keywords: resolveContentKeywords(payload),
     sections,
     chapters: payload.chapters ?? [],
     glossaryTerms: payload.glossaryTerms ?? [],
