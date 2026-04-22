@@ -19,11 +19,35 @@ type AssignmentRow =
   Database["public"]["Tables"]["content_topic_assignments"]["Row"];
 
 type ContentPayload = {
+  generatedSummary?: string;
   keywords?: KnowledgeItem["keywords"];
   sections?: KnowledgeItem["sections"];
   chapters?: KnowledgeItem["chapters"];
   glossaryTerms?: KnowledgeItem["glossaryTerms"];
   transcriptBlocks?: KnowledgeItem["transcriptBlocks"];
+  generationMetadata?: {
+    llmProvider?: string;
+    llmModel?: string;
+    generatedAt?: string;
+    stages?: {
+      summaryKeywords?: {
+        status?: "pending" | "running" | "succeeded" | "failed";
+        startedAt?: string;
+        completedAt?: string;
+        updatedAt?: string;
+        errorType?: string;
+        errorMessage?: string;
+        inputBlockCount?: number;
+        inputCharCount?: number;
+      };
+      sections?: {
+        status?: "pending" | "running" | "succeeded" | "failed";
+      };
+      glossary?: {
+        status?: "pending" | "running" | "succeeded" | "failed";
+      };
+    };
+  };
   sourceMetadata?: {
     audioUrl?: string;
     coverUrl?: string;
