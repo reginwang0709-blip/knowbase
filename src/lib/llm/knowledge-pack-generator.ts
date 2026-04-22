@@ -15,6 +15,13 @@ type SummaryKeywordsResult = {
   }>;
 };
 
+export type KeywordCandidate = {
+  term: string;
+  count: number;
+  firstEvidenceBlockId: string;
+  sampleContext: string;
+};
+
 export type GeneratedSummaryKeywords = SummaryKeywordsResult & {
   normalizedKeywords: Keyword[];
   model: string;
@@ -27,6 +34,54 @@ const MAX_BLOCKS = 40;
 const MIN_BLOCKS = 20;
 const MAX_TRANSCRIPT_CHARS = 5000;
 const RETRY_TRANSCRIPT_CHARS = 4200;
+const MAX_KEYWORD_CANDIDATES = 20;
+const GENERIC_TERMS = new Set([
+  "用户",
+  "系统",
+  "内容",
+  "功能",
+  "项目",
+  "东西",
+  "问题",
+  "方法",
+  "工具",
+  "平台",
+  "模型",
+  "接口",
+  "产品",
+  "技术",
+  "方案",
+  "能力",
+  "实现",
+  "使用",
+  "完成",
+  "进行",
+  "这个",
+  "那个",
+  "然后",
+  "就是",
+  "我们",
+  "你们",
+  "他们",
+  "自己",
+  "可以",
+  "的话",
+  "这里",
+  "那里",
+  "今天",
+  "现在",
+  "因为",
+  "所以",
+  "如果",
+  "但是",
+  "以及",
+  "比如",
+  "比如说",
+  "嗯",
+  "呃",
+]);
+const KEYWORD_HINT_PATTERN =
+  /(平台|系统|框架|模型|接口|工具|产品|方法|协议|API|SDK|Agent|Copilot|Workflow|Studio|Suite)/i;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
@@ -57,6 +112,121 @@ function extractJsonObject(text: string) {
 
 function cleanText(value: unknown) {
   return typeof value === "string" ? value.trim() : "";
+}
+
+function normalizeCandidateTerm(term: string) {
+  return term
+    .replace(/[，。、“”"'`‘’（）()[\]{}<>《》!?！？,:：;；/\\]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function isMeaningfulKeywordCandidate(term: string) {
+  const normalized = normalizeCandidateTerm(term);
+
+  if (!normalized) {
+    return false;
+  }
+
+  if (GENERIC_TERMS.has(normalized)) {
+    return false;
+  }
+
+  if (/^[A-Za-z]$/.test(normalized)) {
+    return false;
+  }
+
+  if (/^\d+$/.test(normalized)) {
+    return false;
+  }
+
+  if (normalized.length < 2) {
+    return false;
+  }
+
+  if (/^[然后就是这个那个嗯呃啊]+$/.test(normalized)) {
+    return false;
+  }
+
+  return true;
+}
+
+function candidateScore(candidate: KeywordCandidate) {
+  let score = candidate.count * 10;
+
+  if (KEYWORD_HINT_PATTERN.test(candidate.term)) {
+    score += 8;
+  }
+
+  if (/[A-Z]/.test(candidate.term) || /[A-Za-z]+\s+[A-Za-z]+/.test(candidate.term)) {
+    score += 6;
+  }
+
+  if (/[\d.]/.test(candidate.term)) {
+    score += 2;
+  }
+
+  if (candidate.term.length >= 3 && candidate.term.length <= 16) {
+    score += 3;
+  }
+
+  return score;
+}
+
+export function extractKeywordCandidatesFromTranscript(
+  blocks: TranscriptBlock[],
+): KeywordCandidate[] {
+  const candidates = new Map<string, KeywordCandidate>();
+
+  const collectCandidate = (term: string, block: TranscriptBlock) => {
+    const normalizedTerm = normalizeCandidateTerm(term);
+
+    if (!isMeaningfulKeywordCandidate(normalizedTerm)) {
+      return;
+    }
+
+    const existing = candidates.get(normalizedTerm);
+
+    if (existing) {
+      existing.count += 1;
+      return;
+    }
+
+    candidates.set(normalizedTerm, {
+      term: normalizedTerm,
+      count: 1,
+      firstEvidenceBlockId: block.id,
+      sampleContext: block.text.slice(0, 120),
+    });
+  };
+
+  for (const block of blocks) {
+    const text = cleanText(block.text);
+
+    if (!text) {
+      continue;
+    }
+
+    const englishMatches =
+      text.match(
+        /\b[A-Z][A-Za-z0-9.+#-]*(?:\s+[A-Z][A-Za-z0-9.+#-]*){0,2}\b|\b[A-Za-z]{2,}(?:\s+[A-Za-z0-9.+#-]{2,}){0,2}\b|\b[A-Z]{2,}(?:-[A-Z0-9]{2,})*\b/g,
+      ) ?? [];
+    const hintedChineseMatches =
+      text.match(
+        /[\u4e00-\u9fa5A-Za-z0-9]{2,16}(?:平台|系统|框架|模型|接口|工具|产品|方法|协议)/g,
+      ) ?? [];
+    const chinesePhraseMatches =
+      text.match(/[\u4e00-\u9fa5]{2,8}/g) ?? [];
+
+    for (const term of [...englishMatches, ...hintedChineseMatches, ...chinesePhraseMatches]) {
+      collectCandidate(term, block);
+    }
+  }
+
+  return Array.from(candidates.values())
+    .filter((candidate) => candidate.count > 1 || KEYWORD_HINT_PATTERN.test(candidate.term))
+    .sort((a, b) => candidateScore(b) - candidateScore(a) || b.count - a.count)
+    .slice(0, MAX_KEYWORD_CANDIDATES);
 }
 
 function sampleTranscriptBlocks(
@@ -163,11 +333,13 @@ function buildUserPrompt({
   platform,
   summary,
   transcript,
+  keywordCandidates,
 }: {
   title: string;
   platform: string;
   summary: string;
   transcript: string;
+  keywordCandidates: KeywordCandidate[];
 }) {
   return `
 请基于以下单篇内容，输出轻量知识包 JSON。
@@ -197,6 +369,20 @@ function buildUserPrompt({
 5. 不要使用输入中不存在的 evidenceBlockId。
 6. 不要输出 null，缺失字段直接省略。
 7. 不要输出 Markdown。
+8. keywords 不是泛主题词，而应优先选择出现频率较高、信息量具体的专有名词 / 核心概念 / 工具 / 方法 / 产品名 / 技术名词。
+9. 优先从给定的 keywordCandidates 中选择关键词；只有在候选不足时，才允许从 transcript 中补充更合适的具体术语。
+10. explanation 要解释“这个词在本内容里是什么意思”，不要写百科式定义。
+11. 避免选择泛词、动词、口语词、无具体含义的短词。
+
+KeywordCandidates:
+${keywordCandidates.length > 0
+    ? keywordCandidates
+        .map(
+          (candidate) =>
+            `- ${candidate.term} | count=${candidate.count} | evidence=${candidate.firstEvidenceBlockId} | context=${candidate.sampleContext}`,
+        )
+        .join("\n")
+    : "无"}
 
 TranscriptBlocks:
 ${transcript}
@@ -276,6 +462,7 @@ async function runSummaryKeywordsGeneration({
   sampledBlocks: TranscriptBlock[];
 }) {
   const transcript = transcriptPromptText(sampledBlocks);
+  const keywordCandidates = extractKeywordCandidatesFromTranscript(sampledBlocks);
   const completion = await createMiniMaxChatCompletion({
     messages: [
       {
@@ -289,6 +476,7 @@ async function runSummaryKeywordsGeneration({
           platform,
           summary,
           transcript,
+          keywordCandidates,
         }),
       },
     ],
