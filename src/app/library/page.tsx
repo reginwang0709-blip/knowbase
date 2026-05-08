@@ -13,7 +13,7 @@ import {
   buildTableRows,
   contentMatches,
   filterLibraryCategories,
-  type LibraryContentItem,
+  type LibraryDisplayContentItem,
   type LibraryTopic,
   type MindMapNode,
 } from "@/lib/library-view-model";
@@ -46,13 +46,52 @@ function topicMatchesKeyword(topic: LibraryTopic, keyword: string) {
   );
 }
 
-function contentMatchesKeyword(content: LibraryContentItem, keyword: string) {
+function contentMatchesKeyword(
+  content: LibraryDisplayContentItem,
+  keyword: string,
+) {
   return (
     keywordMatchesText(content.title, keyword) ||
     content.topKeywords.some((contentKeyword) =>
       keywordMatchesText(contentKeyword, keyword),
     )
   );
+}
+
+function formatAssignmentConfidence(value?: number | null) {
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    return "";
+  }
+
+  return `${Math.round(value * 100)}%`;
+}
+
+function getAssignmentSourceLabel(content: LibraryDisplayContentItem) {
+  switch (content.assignmentSource) {
+    case "llm":
+      return "AI 归档";
+    case "user":
+      return "手动归档";
+    case "static_rule":
+    case "mock_seed":
+      return "默认归档";
+    default:
+      return "";
+  }
+}
+
+function getAssignmentSourceBadgeClass(content: LibraryDisplayContentItem) {
+  switch (content.assignmentSource) {
+    case "llm":
+      return "bg-coral/10 text-coral";
+    case "user":
+      return "bg-sage/10 text-sage";
+    case "static_rule":
+    case "mock_seed":
+      return "bg-panel text-muted";
+    default:
+      return "bg-panel text-muted";
+  }
 }
 
 function getContentHref(contentId: string) {
@@ -267,7 +306,7 @@ export default function LibraryPage() {
     [libraryData],
   );
   const recentContents = useMemo(
-    () => libraryData?.recentContents ?? [],
+    () => (libraryData?.recentContents ?? []) as LibraryDisplayContentItem[],
     [libraryData],
   );
   const recentTopics = useMemo(
@@ -659,7 +698,20 @@ export default function LibraryPage() {
                     {topic.contents.map((content) => {
                       const shouldHighlightContent =
                         activeKeyword?.categoryId === selectedCategory.id &&
-                        contentMatchesKeyword(content, activeKeyword.keyword);
+                        contentMatchesKeyword(
+                          content as LibraryDisplayContentItem,
+                          activeKeyword.keyword,
+                        );
+
+                      const assignmentContent =
+                        content as LibraryDisplayContentItem;
+                      const assignmentSourceLabel =
+                        getAssignmentSourceLabel(assignmentContent);
+                      const assignmentConfidence = formatAssignmentConfidence(
+                        assignmentContent.assignmentConfidence,
+                      );
+                      const assignmentReason =
+                        assignmentContent.assignmentReason?.trim() ?? "";
 
                       return (
                         <div
@@ -679,6 +731,21 @@ export default function LibraryPage() {
                                 <span className="text-muted">
                                   {content.author}
                                 </span>
+                                {assignmentSourceLabel ? (
+                                  <span
+                                    className={`rounded-full px-3 py-1 text-xs font-semibold ${getAssignmentSourceBadgeClass(
+                                      assignmentContent,
+                                    )}`}
+                                    title={assignmentReason || undefined}
+                                  >
+                                    {assignmentSourceLabel}
+                                  </span>
+                                ) : null}
+                                {assignmentConfidence ? (
+                                  <span className="text-xs font-medium text-muted">
+                                    归档置信度 {assignmentConfidence}
+                                  </span>
+                                ) : null}
                               </div>
                               <h4
                                 className={`font-semibold ${
@@ -692,6 +759,14 @@ export default function LibraryPage() {
                               <p className="mt-2 line-clamp-1 text-sm leading-6 text-muted">
                                 {content.summary}
                               </p>
+                              {assignmentReason ? (
+                                <p
+                                  className="mt-2 line-clamp-2 text-xs leading-5 text-muted"
+                                  title={assignmentReason}
+                                >
+                                  归档依据：{assignmentReason}
+                                </p>
+                              ) : null}
                             </div>
                             <div className="flex shrink-0 items-center gap-3 text-sm">
                               <time className="text-muted">
@@ -749,55 +824,86 @@ export default function LibraryPage() {
 
         {filteredRecentContents.length > 0 ? (
           <div className="grid gap-3">
-            {filteredRecentContents.map((content) => (
-              <article
-                className="kb-card block p-4 transition hover:border-sage"
-                key={content.id}
-              >
-                <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
-                  <div>
-                    <div className="mb-2 flex flex-wrap items-center gap-2 text-sm">
-                      <span className="rounded-full bg-coral/10 px-3 py-1 font-semibold text-coral">
-                        {content.platform}
-                      </span>
-                      <span className="text-muted">{content.categoryPath}</span>
+            {filteredRecentContents.map((content) => {
+              const assignmentSourceLabel = getAssignmentSourceLabel(content);
+              const assignmentConfidence = formatAssignmentConfidence(
+                content.assignmentConfidence,
+              );
+              const assignmentReason = content.assignmentReason?.trim() ?? "";
+
+              return (
+                <article
+                  className="kb-card block p-4 transition hover:border-sage"
+                  key={content.id}
+                >
+                  <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
+                    <div>
+                      <div className="mb-2 flex flex-wrap items-center gap-2 text-sm">
+                        <span className="rounded-full bg-coral/10 px-3 py-1 font-semibold text-coral">
+                          {content.platform}
+                        </span>
+                        <span className="text-muted">{content.categoryPath}</span>
+                        {assignmentSourceLabel ? (
+                          <span
+                            className={`rounded-full px-3 py-1 text-xs font-semibold ${getAssignmentSourceBadgeClass(
+                              content,
+                            )}`}
+                            title={assignmentReason || undefined}
+                          >
+                            {assignmentSourceLabel}
+                          </span>
+                        ) : null}
+                        {assignmentConfidence ? (
+                          <span className="text-xs font-medium text-muted">
+                            归档置信度 {assignmentConfidence}
+                          </span>
+                        ) : null}
+                      </div>
+                      <h3 className="font-semibold text-ink">{content.title}</h3>
+                      {assignmentReason ? (
+                        <p
+                          className="mt-2 line-clamp-2 text-xs leading-5 text-muted"
+                          title={assignmentReason}
+                        >
+                          归档依据：{assignmentReason}
+                        </p>
+                      ) : null}
                     </div>
-                    <h3 className="font-semibold text-ink">{content.title}</h3>
+                    <div className="flex shrink-0 items-center gap-3 text-sm">
+                      <time className="text-muted">{content.parsedAt}</time>
+                      {isDatabaseContentId(content.id) ? (
+                        <button
+                          className="font-semibold text-muted transition hover:text-coral"
+                          disabled={deletingContentId === content.id}
+                          type="button"
+                          onClick={() => deleteContent(content.id)}
+                        >
+                          删除
+                        </button>
+                      ) : null}
+                    </div>
                   </div>
-                  <div className="flex shrink-0 items-center gap-3 text-sm">
-                    <time className="text-muted">{content.parsedAt}</time>
-                    {isDatabaseContentId(content.id) ? (
-                      <button
-                        className="font-semibold text-muted transition hover:text-coral"
-                        disabled={deletingContentId === content.id}
-                        type="button"
-                        onClick={() => deleteContent(content.id)}
-                      >
-                        删除
-                      </button>
-                    ) : null}
+                  <div className="mt-3 flex flex-wrap items-center justify-between gap-3">
+                    <div className="flex flex-wrap gap-2">
+                      {content.topKeywords.slice(0, 3).map((keyword) => (
+                        <span
+                          className="rounded-lg bg-panel px-2.5 py-1 text-xs text-ink"
+                          key={keyword}
+                        >
+                          {keyword}
+                        </span>
+                      ))}
+                    </div>
+                    <Link
+                      className="text-sm font-semibold text-sage hover:text-coral"
+                      href={getContentHref(content.id)}
+                    >
+                      查看知识包
+                    </Link>
                   </div>
-                </div>
-                <div className="mt-3 flex flex-wrap items-center justify-between gap-3">
-                  <div className="flex flex-wrap gap-2">
-                    {content.topKeywords.slice(0, 3).map((keyword) => (
-                      <span
-                        className="rounded-lg bg-panel px-2.5 py-1 text-xs text-ink"
-                        key={keyword}
-                      >
-                        {keyword}
-                      </span>
-                    ))}
-                  </div>
-                  <Link
-                    className="text-sm font-semibold text-sage hover:text-coral"
-                    href={getContentHref(content.id)}
-                  >
-                    查看知识包
-                  </Link>
-                </div>
-              </article>
-            ))}
+                </article>
+              );
+            })}
           </div>
         ) : (
           <div className="kb-card p-8 text-center text-muted">

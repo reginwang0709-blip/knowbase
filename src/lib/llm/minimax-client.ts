@@ -5,6 +5,34 @@ type ChatMessage = {
   content: string;
 };
 
+export type MiniMaxToolCall = {
+  id?: string;
+  type?: string;
+  function?: {
+    name?: string;
+    arguments?: string;
+  };
+};
+
+export type MiniMaxFunctionTool = {
+  type: "function";
+  function: {
+    name: string;
+    description?: string;
+    parameters: Record<string, unknown>;
+  };
+};
+
+export type MiniMaxToolChoice =
+  | "auto"
+  | "none"
+  | {
+      type: "function";
+      function: {
+        name: string;
+      };
+    };
+
 type ChatCompletionResponse = {
   id?: string;
   model?: string;
@@ -13,6 +41,9 @@ type ChatCompletionResponse = {
     message?: {
       role?: string;
       content?: string | Array<{ type?: string; text?: string }>;
+      reasoning_content?: string;
+      reasoning_details?: unknown;
+      tool_calls?: MiniMaxToolCall[];
     };
     finish_reason?: string;
   }>;
@@ -32,6 +63,7 @@ export type MiniMaxErrorType =
   | "dns_error"
   | "tls_error"
   | "timeout"
+  | "llm_timeout"
   | "connection_reset"
   | "proxy_error"
   | "auth_error"
@@ -137,6 +169,16 @@ function buildErrorMessage(data: ChatCompletionResponse | null, fallback: string
   return fallback;
 }
 
+export type MiniMaxRequestDiagnostics = {
+  requestFormat: "openai_compatible_chat_completions";
+  reasoningSplitRequested: boolean;
+  responseFormatRequested: boolean;
+  responseFormatActuallyReliableForModel: false | "unknown";
+  toolCallingSupportedForModel: boolean;
+  toolChoiceRequested: boolean;
+  requestedToolName?: string;
+};
+
 export function buildMiniMaxUrl(path: string) {
   const normalizedPath = path.startsWith("/") ? path : `/${path}`;
 
@@ -206,30 +248,80 @@ export async function createMiniMaxChatCompletion({
   messages,
   temperature = 0.2,
   maxTokens = 2200,
+  timeoutMs,
+  reasoningSplit = true,
+  tools,
+  toolChoice,
+  requestJsonResponse = true,
 }: {
   messages: ChatMessage[];
   temperature?: number;
   maxTokens?: number;
+  timeoutMs?: number;
+  reasoningSplit?: boolean;
+  tools?: MiniMaxFunctionTool[];
+  toolChoice?: MiniMaxToolChoice;
+  requestJsonResponse?: boolean;
 }) {
   const model = getMiniMaxModel();
   const endpointUrl = buildMiniMaxUrl("/chat/completions");
   const endpointHost = getMiniMaxEndpointHost();
+  const controller = typeof AbortController !== "undefined"
+    ? new AbortController()
+    : null;
+  const timeoutId =
+    controller && typeof timeoutMs === "number" && timeoutMs > 0
+      ? setTimeout(() => controller.abort("llm_timeout"), timeoutMs)
+      : null;
+
   const response = await fetch(endpointUrl, {
     method: "POST",
     headers: {
       Authorization: `Bearer ${getMiniMaxApiKey()}`,
       "Content-Type": "application/json",
     },
+    signal: controller?.signal,
     body: JSON.stringify({
       model,
       messages,
       temperature,
       max_tokens: maxTokens,
-      response_format: {
-        type: "json_object",
+      // MiniMax-M2.7 may still emit reasoning into `content` in the OpenAI-compatible
+      // native format unless reasoning_split is explicitly enabled.
+      extra_body: {
+        reasoning_split: reasoningSplit,
       },
+      ...(requestJsonResponse
+        ? {
+            // Keep requesting JSON mode for best effort formatting, but do not treat this
+            // as a hard guarantee for MiniMax-M2.7 in downstream diagnostics or parsing.
+            response_format: {
+              type: "json_object",
+            },
+          }
+        : {}),
+      ...(Array.isArray(tools) && tools.length > 0 ? { tools } : {}),
+      ...(toolChoice ? { tool_choice: toolChoice } : {}),
     }),
   }).catch((error) => {
+    if (timeoutId) {
+      clearTimeout(timeoutId);
+    }
+
+    if (
+      controller?.signal.aborted &&
+      typeof timeoutMs === "number" &&
+      timeoutMs > 0
+    ) {
+      throw new MiniMaxRequestError({
+        message: `MiniMax 请求超时（llm_timeout）：服务端在 ${timeoutMs}ms 内未返回结果。`,
+        model,
+        endpointHost,
+        errorType: "llm_timeout",
+        attempts: 1,
+      });
+    }
+
     const failure = describeFetchFailure(error);
 
     throw new MiniMaxRequestError({
@@ -240,6 +332,10 @@ export async function createMiniMaxChatCompletion({
       attempts: 1,
     });
   });
+
+  if (timeoutId) {
+    clearTimeout(timeoutId);
+  }
 
   const data =
     (await response.json().catch(() => null)) as ChatCompletionResponse | null;
@@ -291,10 +387,16 @@ export async function createMiniMaxChatCompletion({
 
   const choice = data?.choices?.[0];
   const content = responseTextFromChoiceContent(choice?.message?.content);
+  const reasoningContent =
+    typeof choice?.message?.reasoning_content === "string"
+      ? choice.message.reasoning_content.trim()
+      : "";
+  const reasoningDetails = choice?.message?.reasoning_details;
+  const toolCalls = choice?.message?.tool_calls ?? [];
 
-  if (!content) {
+  if (!content && toolCalls.length === 0) {
     throw new MiniMaxRequestError({
-      message: "MiniMax 返回成功，但没有可用内容。",
+      message: "MiniMax 返回成功，但没有可用 content 或 tool_calls。",
       model,
       endpointHost,
       errorType: "response_format_error",
@@ -306,7 +408,20 @@ export async function createMiniMaxChatCompletion({
   return {
     model: data?.model || model,
     content,
+    reasoningContent,
+    reasoningDetails,
+    toolCalls,
     usage: data?.usage,
     finishReason: choice?.finish_reason || "",
+    requestDiagnostics: {
+      requestFormat: "openai_compatible_chat_completions" as const,
+      reasoningSplitRequested: reasoningSplit,
+      responseFormatRequested: requestJsonResponse,
+      responseFormatActuallyReliableForModel: false as const,
+      toolCallingSupportedForModel: true,
+      toolChoiceRequested: Boolean(toolChoice),
+      requestedToolName:
+        typeof toolChoice === "object" ? toolChoice.function.name : undefined,
+    },
   };
 }

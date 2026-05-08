@@ -2,80 +2,41 @@
 
 ## 任务名称
 
-Phase 3G-1：基于真实 transcriptBlocks 用 MiniMax 生成轻量知识包摘要和关键词。
+Phase 3G-3：基于真实 transcriptBlocks、generatedSummary、keywords 和 sections，用 MiniMax 生成 glossaryTerms。
+
+## 背景
+
+当前已经完成：
+
+* 小宇宙真实 transcriptBlocks
+* transcriptBlocks 清洗合并
+* shownotes-first sections
+* MiniMax summary_keywords 阶段
+* `content_payload.generatedSummary`
+* `content_payload.keywords`
+* `generationMetadata.stages.summaryKeywords`
+* Step 2 sections 决策树：有高质量 shownotes 时间线时，sections 使用 shownotes；LLM 只用于补 section summary 或在无可用 shownotes 时 fallback
+
+当前要做：
+
+* 单独生成 glossaryTerms
+* 不重新生成 summary / keywords / sections
 
 ## 本阶段目标
 
-输入已有 contentId，读取已有真实 transcriptBlocks，只调用 MiniMax 生成：
+输入已有 contentId，读取已有：
 
-* generatedSummary，150-250 字
-* keywords，最多 5 个
+* title
+* generatedSummary
+* keywords
+* sections
+* transcriptBlocks 精选片段
 
-本阶段不生成 sections，不生成 glossaryTerms。
-sections 仍优先使用 shownotes 时间戳目录。
-glossaryTerms 留到后续单独阶段。
+调用 MiniMax 生成：
 
-## Step 2 Sections 优先级
+* glossaryTerms
 
-Step 2 采用 `shownotes-first, LLM fallback`，默认不调用 LLM。
-
-优先级规则：
-
-1. 如果小宇宙 `shownotes / description / summary` 中能解析出时间戳目录：
-
-   * 直接使用规则解析出的 sections
-   * 不调用 LLM
-   * 不进入 Step 2 LLM
-
-2. 只有在以下情况才考虑后续 Step 2 LLM：
-
-   * 没有 shownotes 时间戳目录
-   * 或规则解析出的 sections 为空
-   * 或 sections 明显质量过低
-
-本阶段先完善 shownotes 解析和质量判断：
-
-* 先定位时间线区域，而不是全篇乱扫
-* 遇到制作信息、链接信息、社群引导、结尾宣传等非时间线区域时停止解析
-* `section.title` 只保留短标题
-* `section.summary` 使用清洗后的较短说明
-* 通过可用性判断后直接使用 shownotes sections
-
-如果 shownotes sections 不可用：
-
-* 只返回或预留 “需要 LLM fallback” 的内部状态
-* 本阶段不调用 Step 2 LLM
-
-Step 3 glossaryTerms 在 Step 2 稳定后再做。
-
-## Step 2 后续 LLM 的定位
-
-如果后续引入 Step 2 LLM，更合理的职责不是默认从零生成章节，而是：
-
-* `section.title / startTimestamp / endTimestamp` 优先来自 shownotes
-* LLM 只在需要时生成或补全 `section.summary`
-* 只有完全没有可用 shownotes sections 时，才考虑让 LLM fallback 生成 sections
-
-## 未来 LLM Section Summary 质量要求
-
-后续如果需要让 LLM 生成 `section.summary`，summary 不能只是短标题改写。
-
-质量要求：
-
-* 每条 summary 建议 `120–180` 字
-* 信息复杂章节可放宽到 `220` 字
-* 必须尽量包含具体对象、关键观点和 `2–3` 个信息点
-* 如果原文有因果、对比、趋势，也要写出来
-* 不要只重复 title
-* 不要写成“本节主要讲了……”这种模板句
-* 不要空泛概括
-* 不要标签堆叠
-* 不要编造 transcript 中没有的信息
-* 不要输出 Markdown
-
-## 设计原因
-
-原一次性生成 summary + sections + keywords + glossaryTerms 的请求过重，容易触发 MiniMax Starter 的拥挤/限流/输出不稳定问题。因此先拆分任务，降低输入和输出负载。
+每个 glossary term 应解释“这个词在本内容中的含义”，不是百科式定义。
 
 ## 边界
 
@@ -84,18 +45,11 @@ Step 3 glossaryTerms 在 Step 2 稳定后再做。
 * 不接主流程
 * 不批量处理 library
 * dryRun 默认不写库
+* 不修改 summary / keywords / sections
 
-## MiniMax 环境变量
+## Debug API
 
-* `MINIMAX_API_KEY`
-* `MINIMAX_BASE_URL`，默认 `https://api.minimaxi.com/v1`
-* `MINIMAX_MODEL`，默认 `MiniMax-M2.7`
-
-不要打印 key。
-
-## 实现要求
-
-先通过 debug API 验证单条 content：
+继续使用：
 
 `POST /api/debug/llm/knowledge-pack`
 
@@ -104,96 +58,276 @@ body：
 ```json
 {
   "contentId": "已有真实小宇宙 contentId",
-  "stage": "summary_keywords",
+  "stage": "glossary_terms",
+  "dryRun": true,
+  "force": false
+}
+```
+
+默认 stage 可以仍是 `summary_keywords`，但当 `stage = glossary_terms` 时，只执行术语解释生成。
+
+另增只读诊断 stage：
+
+```json
+{
+  "contentId": "已有真实小宇宙 contentId",
+  "stage": "glossary_candidates",
   "dryRun": true
 }
 ```
 
-输出只包含：
+该 stage 只做全文 glossary candidates 抽取、归一化、去重、关键词去重、预期术语检查和 batch 规划，不调用 MiniMax，不写库。
+
+## 输出结构
+
+MiniMax 只需返回严格 JSON：
 
 ```ts
 {
-  generatedSummary: string;
-  keywords: Array<{
-    term: string;
-    explanation: string;
-    context: string;
-    evidenceBlockId: string;
-  }>;
+  "glossaryTerms": [
+    {
+      "id": "g-001",
+      "term": "术语",
+      "aliases": ["可选别名"],
+      "definition": "这个词在本内容里的含义",
+      "contextExample": "它在节目中出现的上下文",
+      "category": "concept | person | organization | abbreviation | method | product",
+      "occurrenceCount": 3,
+      "evidenceBlockIds": ["t-001"]
+    }
+  ]
 }
 ```
 
-## Keywords 定义
+## glossaryTerms 新定义
 
-本阶段的 keywords 不是泛主题词，而是：
+glossaryTerms 用来解释：
 
-“在本文中出现频率较高、能够代表内容主题、且具有具体信息量的专有名词 / 核心概念 / 工具 / 方法 / 产品名 / 技术名词。”
+“文中出现、用户可能需要解释才能理解或复用的专有名词、人名、产品名、组织名、缩写、技术名词和特定方法名。”
 
-关键词优先选择：
+## glossaryTerms 选择标准
 
+优先选择：
+
+* 人名
+* 公司 / 组织名
 * 产品名
 * 工具名
-* 方法名
-* 技术框架
-* 业务概念
-* 平台名
-* 重要组织 / 人名
-* 本文反复讨论的核心术语
+* 框架名
+* 模型名
+* 缩写
+* 技术概念
+* 特定方法名
+* 具有上下文含义的行业术语
 
-关键词应避免：
+避免选择：
 
-* 泛词：用户、系统、内容、功能、项目、东西、问题
-* 纯动词：使用、实现、完成、进行
-* 口语词：然后、就是、这个、那个、嗯、呃
-* 过短且无具体含义的词
-* 只出现一次且不重要的词
+* keywords 中已经出现的 term
+* 泛词：用户、系统、内容、问题、功能、项目、能力、模型、产品
+* 口语词
+* 纯动词
+* 纯形容词
+* 平台分发信息
+* 链接 / 社群 / 运营信息
+* 没有解释价值的普通词
 
-## Keyword Candidates 预处理
+## definition 要求
 
-在进入 MiniMax prompt 前，先做本地候选词提取：
+每个 definition 应说明：
 
-* 从 transcriptBlocks 中提取英文/数字/符号组合候选，如 `API`、`OpenClaw`、`Spring Boot`
-* 提取 2-8 字中文名词短语候选
-* 优先保留包含“平台 / 系统 / 框架 / 模型 / 接口 / 工具 / 产品 / 方法 / 协议 / API”等关键词的短语
-* 统计出现次数
-* 记录首次出现 block id
-* 去掉停用词和泛词
-* 按出现次数和具体性排序
-* 最多取前 20 个 candidates 提供给 MiniMax
+* 这个词在本内容中指什么
+* 为什么在本内容中重要
+* 与本内容主题的关系
 
-本阶段仍然只做 `summary_keywords`，不生成 sections，不生成 glossaryTerms。
+不要写成通用百科定义。
+不要直接复制 transcript 原句。
+不要只写“文中提到的某某”。
 
-## 写库策略
+## 输入控制
 
-dryRun=true：不写数据库。
-dryRun=false：只写入：
+1. glossary 候选词必须从完整 transcriptBlocks 抽取，不能只从 prompt 抽样片段抽取。
+2. MiniMax 不直接自由挑词，而是只解释全文候选抽取后的 glossaryCandidates。
+3. 不要把全部 transcriptBlocks 原文塞进 prompt。
+4. 使用：
 
-* `content_payload.generatedSummary`
-* `content_payload.keywords`
-* `content_payload.generationMetadata.stages.summaryKeywords`
+   * generatedSummary
+   * keywords
+   * section titles / summaries
+   * glossaryCandidates（来自全文候选抽取）
+5. glossaryTerms 不设置固定数量上限。
+6. candidates 不允许固定 top-N 截断；如果候选很多，必须按 prompt 字符数分批。
+7. evidenceBlockIds 必须来自 candidate 的真实证据 block。
+8. 不要生成 summary / keywords / sections。
 
-保留：
+## glossary 与 keywords 去重
+
+生成 glossaryTerms 时，必须显式传入已有 `keywords`，并要求：
+
+* 不要输出和 existingKeywords 完全相同的 term
+* 不要输出大小写不同但实质相同的重复项
+* 不要输出全角半角差异导致的重复项
+* 如果某个关键词本身需要解释，优先由 keyword explanation/context 承担，不进入 glossaryTerms
+
+写库前也要做一层本地过滤，去掉与 keywords 重复的 glossaryTerms。
+
+## glossary candidates 与 batching
+
+glossary 生成链路应是：
+
+全文候选抽取 → 候选诊断可视化 → 候选分批送入 MiniMax → 合并结果 → post-validation → 写库
+
+要求：
+
+* 不能使用固定 top 32 / top 40 之类的机械截断。
+* 如果候选很多，用 batching，而不是丢弃候选。
+* 每个 batch 按 prompt 字符数控制，而不是按固定候选数量控制。
+* glossaryTerms 最终不设固定数量上限。
+
+## glossaryCandidates 质量要求
+
+glossaryCandidates 需要分层：
+
+* `high`
+  只保留明确产品名、组织名、模型名/版本号、人名、会议/活动名、技术术语，或命中显式高价值白名单的候选。
+* `medium`
+  看起来像专名，但形式不够稳定，或上下文较弱，需要后续再判断。
+* `low`
+  长句残片、拼接噪音、泛词、角色描述、口语碎片。
+
+高置信度候选中，不应保留以下类型：
+
+* 英文标题残片
+* 全大写长句片段
+* ASR 拼接词
+* `AI SOFTWARE ENGINEER`、`AI CODING AGENT`、`CEO JACK DORSEY` 这类角色描述型短语
+
+## canonical term 规范
+
+glossary candidate 的展示写法需要统一标准化：
+
+* 保留关键缩写的大写，例如 `GDC大会`
+* 品牌/组织名按标准写法输出，例如 `OpenAI`、`DeepSeek`、`GitHub Copilot`、`MiniMax`
+* 中文 + 缩写组合按统一写法输出，例如 `GDC大会`
+* 不要把普通词误美化成品牌名
+
+当前 glossary candidate 主路径应满足：
+
+* 不依赖具体 term 白名单
+* 不依赖具体 term 兜底拉回
+* 不依赖具体品牌/人名/会议名映射字典
+* 只允许通用模式召回、通用去重、通用标准化和 keyword overlap 过滤
+
+## dryRun 规则
+
+`dryRun=true`：
+
+* 不写数据库
+* 不修改 generationMetadata
+* 只返回 glossaryTerms 或错误
+
+`dryRun=false`：
+
+* 如果 `generationMetadata.stages.glossary.status === "running"`：
+
+  * 返回 `LLM_GENERATION_IN_PROGRESS`
+  * 不重复调用 MiniMax
+
+* 如果已经 `succeeded` 且已有 glossaryTerms，且 `force !== true`：
+
+  * 返回 `LLM_GENERATION_ALREADY_EXISTS`
+  * 不重复调用 MiniMax
+
+* 否则：
+
+  * 写入 `running`
+  * 调用 MiniMax
+  * 成功后写入：
+
+    * `content_payload.glossaryTerms`
+    * `generationMetadata.stages.glossary.status = "succeeded"`
+  * 失败后写入：
+
+    * `generationMetadata.stages.glossary.status = "failed"`
+    * `errorType`
+    * `errorMessage`
+
+## 写库保护
+
+dryRun=false 写库时，不要覆盖：
 
 * transcriptBlocks
 * sourceMetadata
+* generatedSummary
+* keywords
 * sections
+* section title / timestamp / order
+
+只更新：
+
 * glossaryTerms
-
-## LLM 请求负载控制
-
-1. 输入 transcriptBlocks 控制在 20-40 个 block。
-2. 总 transcript 输入控制在 5000 字符以内。
-3. prompt 不要求生成 sections。
-4. prompt 不要求生成 glossaryTerms。
-5. keywords 最多 5 个。
-6. evidenceBlockId 必须来自输入 block id。
-7. prompt 中应优先使用本地 `keywordCandidates` 选择关键词。
-8. 输出严格 JSON，但结构要比原来更简单。
+* generationMetadata.stages.glossary
 
 ## 错误处理
 
-* 529 / overloaded：返回服务拥挤，请稍后重试
-* 429 / rate limit：返回限流，请稍后重试
-* 401：返回鉴权失败，请检查 key/endpoint
-* token 过长：进一步减少 transcript 输入后重试一次
-* dryRun=true 时永远不写库
+沿用 MiniMax 错误分类：
+
+* 529 → overloaded_error
+* 429 → rate_limited
+* 401 → auth_error
+* token limit → token_limit
+* fetch failed → network_error / dns_error / tls_error / timeout / proxy_error
+
+如果 token 过长：
+
+* 缩短 transcript 输入后最多重试一次
+* 不要无限重试
+
+## 实现要求
+
+请在已有 Phase 3G LLM 框架上扩展，不要重写。
+
+允许修改：
+
+* `src/lib/llm/knowledge-pack-generator.ts`
+* `src/app/api/debug/llm/knowledge-pack/route.ts`
+* `src/lib/api-mappers.ts`
+* `docs/tasks/current-task.md`
+
+如确有必要，可以少量修改：
+
+* `src/lib/llm/minimax-client.ts`
+
+不要修改：
+
+* `/api/parse-tasks`
+* 首页
+* 知识库页
+* 内容页 UI 大结构
+* Supabase schema
+* mock data
+* Fun-ASR 代码
+* `.env.local`
+
+## 验证
+
+优先代码级验证，不强求 MiniMax 调用成功。
+
+运行：
+
+```bash
+npm run typecheck
+npm run lint
+npm run build
+```
+
+如果要调用 MiniMax，只允许对已有真实小宇宙 contentId 做一次 dryRun：
+
+```json
+{
+  "contentId": "d2bbdb1f-cc3e-4c75-84cd-d328e8bb0ff1",
+  "stage": "glossary_terms",
+  "dryRun": true
+}
+```
+
+如果 dryRun 成功，再由我确认是否 dryRun=false 写库。

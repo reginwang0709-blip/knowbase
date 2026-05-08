@@ -29,21 +29,82 @@ export type Section = {
   evidenceBlockIds?: string[];
 };
 
+export type GlossaryExplanationStatus =
+  | "ready"
+  | "pending"
+  | "generating"
+  | "failed";
+
+export type GlossaryCategory =
+  | "concept"
+  | "person"
+  | "organization"
+  | "abbreviation"
+  | "method"
+  | "product"
+  | "technical_concept"
+  | "product_name"
+  | "company_name"
+  | "model_name"
+  | "framework"
+  | "event"
+  | "industry_term"
+  | "other";
+
+export type GlossaryExplanation = {
+  definition: string;
+  whyItMatters: string;
+  evidence: string;
+  aliases: string[];
+};
+
+export type GlossaryDisplayStatus = "highlighted" | "inventory_only" | "hidden";
+export type GlossaryUserFeedback =
+  | "starred"
+  | "hidden"
+  | "incorrect"
+  | "user_rejected"
+  | "not_needed"
+  | "none";
+
+export type GlossaryOccurrence = {
+  id?: string;
+  blockId: string;
+  startOffset?: number | null;
+  endOffset?: number | null;
+  matchedText?: string;
+};
+
 export type GlossaryTerm = {
   id: string;
+  termId?: string;
+  contentGlossaryTermId?: string;
+  contentId?: string;
   term: string;
+  normalizedTerm?: string;
   aliases?: string[];
-  definition: string;
-  contextExample: string;
-  category?:
-    | "concept"
-    | "person"
-    | "organization"
-    | "abbreviation"
-    | "method"
-    | "product";
+  definition?: string;
+  contextExample?: string;
+  category?: GlossaryCategory;
+  source?: "auto" | "user_added";
+  confidence?: "high" | "medium" | "low";
+  evidenceSnippet?: string;
+  blockId?: string;
+  firstEvidenceBlockId?: string;
   occurrenceCount: number;
   evidenceBlockIds: string[];
+  occurrences?: GlossaryOccurrence[];
+  explanationStatus?: GlossaryExplanationStatus;
+  explanation?: GlossaryExplanation | null;
+  highlightEnabled?: boolean;
+  displayStatus?: GlossaryDisplayStatus;
+  displayReason?: string;
+  hiddenReason?: string;
+  isStarred?: boolean;
+  userFeedback?: GlossaryUserFeedback;
+  feedbackUpdatedAt?: string;
+  createdAt?: string;
+  updatedAt?: string;
 };
 
 export type KnowledgeItem = {

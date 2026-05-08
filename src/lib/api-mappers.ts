@@ -1,4 +1,7 @@
 import type {
+  LibraryDisplayContentItem,
+} from "./library-view-model";
+import type {
   Keyword,
   KnowledgeItem,
   LibraryCategory,
@@ -7,6 +10,7 @@ import type {
   RecentTopic,
 } from "./mock-data";
 import type { Database, Json } from "./supabase/types";
+import { normalizeGlossaryTermsArray } from "./glossary-terms";
 import {
   buildSectionsFromTimestampDirectory,
   postProcessTranscriptBlocks,
@@ -62,6 +66,78 @@ type LibraryRows = {
   assignments: AssignmentRow[];
   contents: ContentRow[];
 };
+
+function getOptionalAssignmentStringField(row: object, key: string) {
+  const value = (row as Record<string, unknown>)[key];
+  return typeof value === "string" ? value.trim() : "";
+}
+
+function getOptionalAssignmentBooleanField(row: object, key: string) {
+  return (row as Record<string, unknown>)[key] === true;
+}
+
+function getOptionalAssignmentNumberField(row: object, key: string) {
+  const value = (row as Record<string, unknown>)[key];
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+function assignmentSourcePriority(source: string) {
+  switch (source) {
+    case "user":
+      return 4;
+    case "llm":
+      return 3;
+    case "static_rule":
+      return 2;
+    case "mock_seed":
+      return 1;
+    default:
+      return 0;
+  }
+}
+
+function assignmentUpdatedAtTimestamp(assignment: AssignmentRow) {
+  const archivedAt = getOptionalAssignmentStringField(assignment, "archived_at");
+  const updatedAt = assignment.updated_at;
+  const timestamp = archivedAt || updatedAt || assignment.created_at;
+  const parsed = timestamp ? new Date(timestamp).getTime() : 0;
+
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function comparePrimaryAssignments(first: AssignmentRow, second: AssignmentRow) {
+  const firstSource = getOptionalAssignmentStringField(first, "source");
+  const secondSource = getOptionalAssignmentStringField(second, "source");
+  const firstIsUserSource = firstSource === "user";
+  const secondIsUserSource = secondSource === "user";
+
+  if (firstIsUserSource !== secondIsUserSource) {
+    return Number(secondIsUserSource) - Number(firstIsUserSource);
+  }
+
+  const firstUserAdjusted = getOptionalAssignmentBooleanField(first, "user_adjusted");
+  const secondUserAdjusted = getOptionalAssignmentBooleanField(second, "user_adjusted");
+
+  if (firstUserAdjusted !== secondUserAdjusted) {
+    return Number(secondUserAdjusted) - Number(firstUserAdjusted);
+  }
+
+  const firstSourcePriority = assignmentSourcePriority(firstSource);
+  const secondSourcePriority = assignmentSourcePriority(secondSource);
+
+  if (firstSourcePriority !== secondSourcePriority) {
+    return secondSourcePriority - firstSourcePriority;
+  }
+
+  const firstConfidence = getOptionalAssignmentNumberField(first, "confidence") ?? 0;
+  const secondConfidence = getOptionalAssignmentNumberField(second, "confidence") ?? 0;
+
+  if (firstConfidence !== secondConfidence) {
+    return secondConfidence - firstConfidence;
+  }
+
+  return assignmentUpdatedAtTimestamp(second) - assignmentUpdatedAtTimestamp(first);
+}
 
 function isRecord(value: Json): value is Record<string, Json | undefined> {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
@@ -121,7 +197,7 @@ export function buildContentPayloadFromMockItem(item: KnowledgeItem): Json {
     keywords: item.keywords,
     sections: item.sections,
     chapters: item.chapters,
-    glossaryTerms: item.glossaryTerms,
+    glossaryTerms: normalizeGlossaryTermsArray(item.glossaryTerms, item.id),
     transcriptBlocks: item.transcriptBlocks,
   } as Json;
 }
@@ -170,7 +246,12 @@ export function extractTopKeywords(
   return fallbackKeywords.slice(0, 5);
 }
 
-export function mapContentRowToKnowledgeItem(row: ContentRow): KnowledgeItem {
+export function mapContentRowToKnowledgeItem(
+  row: ContentRow,
+  options?: {
+    glossaryTerms?: KnowledgeItem["glossaryTerms"];
+  },
+): KnowledgeItem {
   const payload = toPayload(row.content_payload);
   const transcriptBlocks = Array.isArray(payload.transcriptBlocks)
     ? postProcessTranscriptBlocks(payload.transcriptBlocks)
@@ -194,7 +275,9 @@ export function mapContentRowToKnowledgeItem(row: ContentRow): KnowledgeItem {
     keywords: resolveContentKeywords(payload),
     sections,
     chapters: payload.chapters ?? [],
-    glossaryTerms: payload.glossaryTerms ?? [],
+    glossaryTerms:
+      options?.glossaryTerms ??
+      normalizeGlossaryTermsArray(payload.glossaryTerms, row.id),
     transcriptBlocks,
   };
 }
@@ -203,12 +286,25 @@ function toLibraryContentItem({
   content,
   category,
   topic,
+  assignment,
 }: {
   content: ContentRow;
   category?: CategoryRow;
   topic?: TopicRow;
-}): LibraryContentItem {
+  assignment?: AssignmentRow;
+}): LibraryDisplayContentItem {
   const fallbackKeywords = topic?.top_keywords ?? category?.top_keywords ?? [];
+  const assignmentSource =
+    assignment && getOptionalAssignmentStringField(assignment, "source");
+  const assignmentReason =
+    assignment &&
+    getOptionalAssignmentStringField(assignment, "assignment_reason");
+  const assignmentModel =
+    assignment && getOptionalAssignmentStringField(assignment, "model");
+  const assignmentArchivedAt =
+    assignment && getOptionalAssignmentStringField(assignment, "archived_at");
+  const assignmentStatus =
+    assignment && getOptionalAssignmentStringField(assignment, "status");
 
   return {
     id: content.id,
@@ -220,6 +316,14 @@ function toLibraryContentItem({
       category && topic ? `${category.name} / ${topic.name}` : "未归档",
     topKeywords: extractTopKeywords(content.content_payload, fallbackKeywords),
     parsedAt: formatDateTime(content.parsed_at),
+    assignmentSource: assignmentSource || undefined,
+    assignmentConfidence: assignment
+      ? getOptionalAssignmentNumberField(assignment, "confidence")
+      : null,
+    assignmentReason: assignmentReason || undefined,
+    assignmentModel: assignmentModel || undefined,
+    assignmentArchivedAt: assignmentArchivedAt || undefined,
+    assignmentStatus: assignmentStatus || undefined,
   };
 }
 
@@ -232,14 +336,44 @@ export function mapLibraryRowsToResponse({
   libraryCategories: LibraryCategory[];
   recentTopics: RecentTopic[];
   recentContents: LibraryContentItem[];
+  diagnostics: {
+    totalAssignmentsCount: number;
+    acceptedAssignmentsCount: number;
+    dedupedContentCount: number;
+    duplicateAssignmentContentCount: number;
+    assignmentSourceBreakdown: Record<string, number>;
+    primaryAssignmentRule: string;
+    primaryAssignmentsPreview: Array<{
+      contentId: string;
+      topicId: string;
+      source: string;
+      status: string;
+      confidence: number | null;
+    }>;
+  };
 } {
   const visibleContents = contents.filter((content) => !shouldHideFromLibrary(content));
+  const totalAssignmentsCount = assignments.length;
+  const acceptedAssignments = assignments.filter(
+    (assignment) => getOptionalAssignmentStringField(assignment, "status") === "accepted",
+  );
+  const acceptedAssignmentsCount = acceptedAssignments.length;
 
   if (visibleContents.length === 0) {
     return {
       libraryCategories: [],
       recentTopics: [],
       recentContents: [],
+      diagnostics: {
+        totalAssignmentsCount,
+        acceptedAssignmentsCount,
+        dedupedContentCount: 0,
+        duplicateAssignmentContentCount: 0,
+        assignmentSourceBreakdown: {},
+        primaryAssignmentRule:
+          "user > user_adjusted > llm > static_rule > mock_seed",
+        primaryAssignmentsPreview: [],
+      },
     };
   }
 
@@ -247,16 +381,37 @@ export function mapLibraryRowsToResponse({
   const topicById = new Map(topics.map((topic) => [topic.id, topic]));
   const contentById = new Map(visibleContents.map((content) => [content.id, content]));
   const assignmentsByTopicId = new Map<string, AssignmentRow[]>();
-  const firstAssignmentByContentId = new Map<string, AssignmentRow>();
+  const assignmentsByContentId = new Map<string, AssignmentRow[]>();
 
-  for (const assignment of assignments) {
-    const existing = assignmentsByTopicId.get(assignment.topic_id) ?? [];
-    existing.push(assignment);
-    assignmentsByTopicId.set(assignment.topic_id, existing);
+  for (const assignment of acceptedAssignments) {
+    const existingByContent = assignmentsByContentId.get(assignment.content_id) ?? [];
+    existingByContent.push(assignment);
+    assignmentsByContentId.set(assignment.content_id, existingByContent);
+  }
 
-    if (!firstAssignmentByContentId.has(assignment.content_id)) {
-      firstAssignmentByContentId.set(assignment.content_id, assignment);
+  const primaryAssignmentsByContentId = new Map<string, AssignmentRow>();
+  const assignmentSourceBreakdown: Record<string, number> = {};
+  let duplicateAssignmentContentCount = 0;
+
+  for (const [contentId, contentAssignments] of assignmentsByContentId.entries()) {
+    if (contentAssignments.length > 1) {
+      duplicateAssignmentContentCount += 1;
     }
+
+    const sortedAssignments = [...contentAssignments].sort(comparePrimaryAssignments);
+    const primaryAssignment = sortedAssignments[0];
+
+    if (!primaryAssignment) {
+      continue;
+    }
+
+    primaryAssignmentsByContentId.set(contentId, primaryAssignment);
+    const source = getOptionalAssignmentStringField(primaryAssignment, "source") || "unknown";
+    assignmentSourceBreakdown[source] = (assignmentSourceBreakdown[source] ?? 0) + 1;
+
+    const existingByTopic = assignmentsByTopicId.get(primaryAssignment.topic_id) ?? [];
+    existingByTopic.push(primaryAssignment);
+    assignmentsByTopicId.set(primaryAssignment.topic_id, existingByTopic);
   }
 
   const topicsByCategoryId = new Map<string, TopicRow[]>();
@@ -274,13 +429,22 @@ export function mapLibraryRowsToResponse({
         .map((topic): LibraryTopic | null => {
           const topicAssignments = assignmentsByTopicId.get(topic.id) ?? [];
           const topicContents = topicAssignments
-            .map((assignment) => contentById.get(assignment.content_id))
-            .filter((content): content is ContentRow => Boolean(content))
-            .map((content) =>
+            .map((assignment) => ({
+              assignment,
+              content: contentById.get(assignment.content_id),
+            }))
+            .filter(
+              (
+                entry,
+              ): entry is { assignment: AssignmentRow; content: ContentRow } =>
+                Boolean(entry.content),
+            )
+            .map(({ assignment, content }) =>
               toLibraryContentItem({
                 content,
                 category,
                 topic,
+                assignment,
               }),
             );
 
@@ -353,7 +517,7 @@ export function mapLibraryRowsToResponse({
     )
     .slice(0, 8)
     .map((content) => {
-      const assignment = firstAssignmentByContentId.get(content.id);
+      const assignment = primaryAssignmentsByContentId.get(content.id);
       const topic = assignment ? topicById.get(assignment.topic_id) : undefined;
       const category = topic ? categoryById.get(topic.category_id) : undefined;
 
@@ -361,6 +525,7 @@ export function mapLibraryRowsToResponse({
         content,
         category,
         topic,
+        assignment,
       });
     });
 
@@ -368,5 +533,23 @@ export function mapLibraryRowsToResponse({
     libraryCategories,
     recentTopics,
     recentContents,
+    diagnostics: {
+      totalAssignmentsCount,
+      acceptedAssignmentsCount,
+      dedupedContentCount: primaryAssignmentsByContentId.size,
+      duplicateAssignmentContentCount,
+      assignmentSourceBreakdown,
+      primaryAssignmentRule:
+        "user > user_adjusted > llm > static_rule > mock_seed",
+      primaryAssignmentsPreview: Array.from(primaryAssignmentsByContentId.entries())
+        .slice(0, 12)
+        .map(([contentId, assignment]) => ({
+          contentId,
+          topicId: assignment.topic_id,
+          source: getOptionalAssignmentStringField(assignment, "source") || "unknown",
+          status: getOptionalAssignmentStringField(assignment, "status") || "unknown",
+          confidence: getOptionalAssignmentNumberField(assignment, "confidence"),
+        })),
+    },
   };
 }

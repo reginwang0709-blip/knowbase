@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 
 import { mapContentRowToKnowledgeItem } from "@/lib/api-mappers";
+import { readGlossaryTermsForContent } from "@/lib/glossary-store";
 import { supabaseAdmin } from "@/lib/supabase/admin";
 
 type ContentRouteContext = {
@@ -36,7 +37,17 @@ export async function GET(_request: Request, context: ContentRouteContext) {
     );
   }
 
-  return NextResponse.json(mapContentRowToKnowledgeItem(content));
+  const glossaryReadResult = await readGlossaryTermsForContent(content);
+
+  return NextResponse.json(
+    {
+      ...mapContentRowToKnowledgeItem(content, {
+        glossaryTerms: glossaryReadResult.glossaryTerms,
+      }),
+      glossaryDataSource: glossaryReadResult.glossaryDataSource,
+      diagnostics: glossaryReadResult.diagnostics,
+    },
+  );
 }
 
 export async function DELETE(_request: Request, context: ContentRouteContext) {

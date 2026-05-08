@@ -6,6 +6,18 @@ import type {
 
 export type { LibraryCategory, LibraryContentItem, LibraryTopic };
 
+export type LibraryAssignmentMeta = {
+  assignmentSource?: string;
+  assignmentConfidence?: number | null;
+  assignmentReason?: string;
+  assignmentModel?: string;
+  assignmentArchivedAt?: string;
+  assignmentStatus?: string;
+};
+
+export type LibraryDisplayContentItem = LibraryContentItem &
+  LibraryAssignmentMeta;
+
 export type TableViewRow = {
   id: string;
   title: string;
